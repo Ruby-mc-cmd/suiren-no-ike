@@ -4386,11 +4386,11 @@ function splash(x, y, z, n, speed, size = 0.004) {
   }
 }
 // ---------------------------------------------------------------- fireflies (ホタル)
-// At night Genji fireflies drift low over the banks and the water, and some rest in the grass. Each one flashes on a
-// slow beat of about two seconds; neighbours nudge one another's timing, so groups gradually fall into step and pulse
-// together in waves, as real ones do. They draw from their own random stream, so the seeded layout of everything else
-// is untouched.
+// At night Genji fireflies drift low over the banks and the water, and some rest in the grass. Each one keeps its own
+// time: it glows softly for four seconds, goes dark for a while, and glows again, with no regard for the others.
+// They draw from their own random stream, so the seeded layout of everything else is untouched.
 const FF_N = 56;
+const FF_ON = 4.0;                       // each glow lasts four seconds
 const ffRand = (() => { let a = 0x2f6b9e31; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
 const ffR = (a, b) => a + (b - a) * ffRand();
 const ffAttr = new THREE.InstancedBufferAttribute(new Float32Array(FF_N * 4), 4).setUsage(THREE.DynamicDrawUsage);
@@ -4425,21 +4425,22 @@ const fireflies = [];
 for (let i = 0; i < FF_N; i++) {
   const th = ffR(0, TAU), off = ffR(-0.8, 1.3), p = polarAt(th, off);
   fireflies.push({ x: p.x, y: 0.5, z: p.z, vx: 0, vy: 0, vz: 0, th, off, h: ffR(0.15, 1.2), rest: ffRand() < 0.3, restT: ffR(4, 30),
-    ph: ffRand(), w: 1 / ffR(1.9, 2.4), seed: ffR(0, 100), glow: 0 });
+    on: false, tt: 0, seed: ffR(0, 100), glow: 0 });
+  const f = fireflies[i];
+  if (ffRand() < 0.4) { f.on = true; f.tt = ffR(0, FF_ON); } else f.tt = ffR(0, 6);   // start at scattered points in the cycle
 }
 const ffGround = (x, z) => (pondSDF(x, z) > 0 ? terrainH(x, z) : 0);
-function ffFlash(ph) { return ph < 0.12 ? smooth(0, 0.12, ph) : ph < 0.3 ? 1 : ph < 0.58 ? 1 - smooth(0.3, 0.58, ph) : 0; }
+// one glow: brightening over most of a second, holding, then fading out (u: seconds into the glow)
+function ffFlash(u) { return u < 0.8 ? smooth(0, 0.8, u) : u < FF_ON - 1.0 ? 1 : 1 - smooth(FF_ON - 1.0, FF_ON, u); }
 function updateFireflies(dt, t) {
   if (G.uNight.value < 0.3) { ffGeo.instanceCount = 0; return; }
   const A = ffAttr.array;
   for (let i = 0; i < FF_N; i++) {
     const f = fireflies[i];
-    // timing: pulled towards the neighbours' beat (a few metres around)
-    let c = 0, n = 0;
-    for (let j = 0; j < FF_N; j++) { if (j === i) continue; const o = fireflies[j], dx = o.x - f.x, dz = o.z - f.z; if (dx * dx + dz * dz < 4) { c += Math.sin(TAU * (o.ph - f.ph)); n++; } }
-    f.ph += dt * (f.w * (f.rest ? 0.8 : 1) + (n ? 0.5 * c / n : 0));
-    f.ph -= Math.floor(f.ph);
-    f.glow = ffFlash(f.ph) * (f.rest ? 0.55 : 1);
+    // its own timing: four seconds alight, then dark for a random while
+    f.tt -= dt;
+    if (f.tt <= 0) { f.on = !f.on; f.tt = f.on ? FF_ON : ffR(1.5, 7); }
+    f.glow = f.on ? ffFlash(FF_ON - f.tt) * (f.rest ? 0.55 : 1) : 0;
     if (f.rest) {
       // sitting on a grass blade: a slight sway, then off again after a while
       f.restT -= dt;
@@ -7417,6 +7418,7 @@ async function boot() {
 API.step = (n = 1) => { const dt = 1 / OPTS.fps; for (let i = 0; i < n; i++) { update(dt); render(dt); } return G.uTime.value; };
 API.profile = () => { PROF = []; PROF.t = performance.now(); mark('start'); update(1 / 30); render(1 / 30); const r = PROF; PROF = null; return r.map(x => x[0] + ':' + Math.round(x[1])).join(' '); };
 API.dbg_str = () => ({ striders, strStats, frogs });
+API.dbg_ff = () => fireflies;
 API.dbg_veg2 = () => ({ lotus, lotusFloat, lotusStand, willowTips, LOTUS0, WILLOW });
 API.dbg_veg = () => ({ fallen, weeds, gust, plumes: NPLUME, NWEED, duck, duckRafts, hishi, fluff, typhaS, TYPHA, NDUCK, SAZANKA, HIGAN, TSUWA, FERNS, NCARD, ribVerts: RIB.p.length / 3 });
 API.dbg = { pondGrad, terrainH, polarAt, pondR, SUSUKI, LANT, TREE_DEF, frogs, pads, get drops() { return dropCount; }, RES, koi, food, pondSDF, koiSegDist, SEG, feed, koiEnds, KOI_R, KOI_H };
