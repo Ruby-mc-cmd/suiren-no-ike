@@ -70,6 +70,9 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 .loading{position:fixed;inset:0;display:grid;place-items:center;background:var(--deep);color:var(--ink-2);font-family:var(--f-display);letter-spacing:.2em;font-size:15px;transition:opacity .9s}
 .loading.gone{opacity:0;pointer-events:none}
 .loading small{display:block;margin-top:10px;font-family:var(--f-ui);font-size:11px;letter-spacing:.12em;color:var(--ink-3);text-align:center}
+.loading .lbar{width:min(220px,60vw);height:3px;margin:16px auto 0;border-radius:2px;background:rgba(243,239,230,.14);overflow:hidden}
+.loading .lbar i{display:block;width:0;height:100%;border-radius:2px;background:var(--lotus);transition:width .25s ease-out}
+#load-pct{margin-top:9px;font-variant-numeric:tabular-nums;letter-spacing:.08em;color:var(--ink-2)}
 .capture .title,.capture .bar,.capture .grab,.capture .hint,.capture .panel{display:none}
 @media (max-width:560px){
   .lbl{display:none}
@@ -78,7 +81,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
   #vol,#zoom{width:80px}
   .zm .ico{display:block}
 }
-@media (prefers-reduced-motion:reduce){.hint,.loading,.bar,.bar button,.grab,.title{transition:none}}
+@media (prefers-reduced-motion:reduce){.hint,.loading,.loading .lbar i,.bar,.bar button,.grab,.title{transition:none}}
 </style>
 
 <canvas id="scene" tabindex="0" aria-label="鯉が泳ぎ、アマガエルが葉にとまる秋の睡蓮の池の3Dシーン。タップで餌、ドラッグで視点を回転"></canvas>
@@ -127,4 +130,4 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
   </dl>
   <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒、カエルをタップすると跳びます。「カエル」は押すたびに次の一匹へ移ります。</p>
 </aside>
-<div class="loading" id="loading"><div>池に水を張っています<small id="load-sub">シェーダーを準備中</small></div></div>
+<div class="loading" id="loading"><div>池に水を張っています<small id="load-sub">シェーダーを準備中</small><div class="lbar" id="load-prog" role="progressbar" aria-label="シェーダーのコンパイル" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="load-bar"></i></div><small id="load-pct">0%</small></div></div>

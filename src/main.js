@@ -526,8 +526,11 @@ function runPass(mat, target, clear = false) {
   if (clear) renderer.clear(true, false, false);
   renderer.render(fsScene, fsCam);
 }
+const PASS_MATS = [];            // every full-screen pass, so they can all be compiled up front behind the progress bar
 function fsMat(fragmentShader, uniforms = {}, extra = {}) {
-  return new THREE.ShaderMaterial(Object.assign({ vertexShader: FS_VS, fragmentShader, uniforms, depthTest: false, depthWrite: false }, extra));
+  const m = new THREE.ShaderMaterial(Object.assign({ vertexShader: FS_VS, fragmentShader, uniforms, depthTest: false, depthWrite: false }, extra));
+  PASS_MATS.push(m);
+  return m;
 }
 
 // ---------------------------------------------------------------- wave simulation
@@ -7124,15 +7127,76 @@ allocTargets();
 // settle simulation state
 for (let i = 0; i < 4; i++) update(1 / 30);
 
+// ---------------------------------------------------------------- shader compilation with a progress bar
+API.loadLog = [];
+let loadShown = 0;
+function loadProgress(f, label) {
+  const pct = Math.max(loadShown, Math.round(clamp(f, 0, 1) * 100)); loadShown = pct;
+  $('load-bar').style.width = pct + '%'; $('load-pct').textContent = pct + '%'; $('load-prog').setAttribute('aria-valuenow', String(pct));
+  if (label) $('load-sub').textContent = label;
+  API.loadLog.push([Math.round(performance.now()), pct]);
+}
+const nextPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+// Every material in the scene, the caustics grid and every full-screen pass is compiled before the first frame, and each
+// is then drawn once into a tiny off-screen target — many drivers only finish a shader when it is first used, and that
+// is where most of the wait is. Where the browser compiles in the background (KHR_parallel_shader_compile) all programs
+// are started at once and counted as they finish; otherwise they are done one after another. The page repaints now and
+// then in between so the bar can move.
+const warmRT = makeRT(4, 4, { depthBuffer: true });
+async function compileAll() {
+  const jobs = [], seen = new Set();
+  camera.layers.enableAll();
+  const drawObj = (o) => { const fc = o.frustumCulled; o.frustumCulled = false; renderer.setRenderTarget(warmRT); renderer.render(o, camera); o.frustumCulled = fc; };
+  scene.traverse((o) => {
+    if (!(o.isMesh || o.isPoints || o.isLine || o.isSprite) || !o.material || Array.isArray(o.material) || seen.has(o.material)) return;
+    seen.add(o.material);
+    jobs.push({ compile: () => renderer.compile(o, camera, scene), warm: () => drawObj(o) });
+  });
+  jobs.push({ compile: () => renderer.compile(causScene, fsCam), warm: () => { renderer.setRenderTarget(warmRT); renderer.render(causScene, fsCam); } });
+  for (const m of PASS_MATS) jobs.push({ compile: () => { fsQuad.material = m; return renderer.compile(fsScene, fsCam); }, warm: () => runPass(m, warmRT) });
+  const gl = renderer.getContext(), parallel = renderer.extensions.has('KHR_parallel_shader_compile');
+  const prog = (m) => renderer.properties.get(m).currentProgram;
+  let tYield = performance.now(), nProg = 0;
+  const breathe = async () => { if (performance.now() - tYield > 45) { await nextPaint(); tYield = performance.now(); } };
+  // 1. start compiling (with background compilation this is quick; without it, each link waits for its program)
+  const sets = [];
+  for (let i = 0; i < jobs.length; i++) {
+    const set = jobs[i].compile(); sets.push(set); nProg += set.size;
+    if (!parallel) for (const m of set) { const p = prog(m); if (p && p.program) gl.getProgramParameter(p.program, gl.LINK_STATUS); }
+    loadProgress((i + 1) / jobs.length * (parallel ? 0.1 : 0.45));
+    await breathe();
+  }
+  // 2. background compilation: count programs off as the driver finishes them
+  if (parallel) {
+    for (;;) {
+      let ready = 0, total = 0;
+      for (const set of sets) for (const m of set) { total++; const p = prog(m); if (!p || p.isReady()) ready++; }
+      loadProgress(0.1 + 0.35 * ready / Math.max(total, 1));
+      if (ready >= total) break;
+      await new Promise((r) => setTimeout(r, 40));
+    }
+  }
+  // 3. first use of each program (the sun's shadow map first, so the shadow samplers have a real depth texture to read)
+  updateCamera(0); updateReflectCamera(); renderShadow(true);
+  for (let i = 0; i < jobs.length; i++) {
+    jobs[i].warm(); gl.finish();
+    loadProgress(0.45 + 0.53 * (i + 1) / jobs.length);
+    await breathe();
+  }
+  renderer.setRenderTarget(null);
+  return nProg;
+}
+
 async function boot() {
   try {
-    $('load-sub').textContent = 'シェーダーをコンパイル中';
+    loadProgress(0, 'シェーダーをコンパイル中');
+    await nextPaint();
     updateCamera(0); updateReflectCamera();
-    if (renderer.compileAsync) {
-      camera.layers.enableAll();
-      await renderer.compileAsync(scene, camera);
-    }
+    API.programs = await compileAll();
+    loadProgress(0.98, '最初の一枚を描いています');
+    await nextPaint();
     render(1 / 60);
+    loadProgress(1);
     if (OPTS.capture) $('loading').remove(); else { $('loading').classList.add('gone'); setTimeout(() => uiShow(3500), 700); setTimeout(hideHint, 14000); }
     API.ready = true;
   } catch (e) {
