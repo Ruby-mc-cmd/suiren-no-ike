@@ -4487,6 +4487,14 @@ function setView(name, instant) {
     Object.assign(camGoal, { tx: 1.0, ty: 0.34, tz: -1.2, el: 0.02, dist: portrait ? 3.4 : 3.1, fov: portrait ? 56 : 48 });
   }
   if (instant) { Object.assign(cam, camGoal); updateCamera(0); dof.ap = dof.apGoal; }
+  syncZoomUI();
+}
+// how far in and out the camera may go in each view; the zoom slider spans this range on a log scale (left: wide, right: close)
+function zoomLim() { return view === 'frog' ? [0.09, 2.5] : [0.8, 16]; }
+function syncZoomUI() {
+  const z = document.getElementById('zoom'); if (!z || z._drag) return;
+  const [a, b] = zoomLim();
+  z.value = String(Math.round(clamp(Math.log(b / camGoal.dist) / Math.log(b / a), 0, 1) * 1000));
 }
 // camera target height for a frog: at the water it hugs the surface, up on a lotus leaf it follows the frog
 const frogTY = (f) => f.pos.y - 0.45 * clamp(f.pos.y, -0.05, 0.02) + 0.03 * FROG_SCALE * f.size;
@@ -4578,7 +4586,8 @@ canvas.addEventListener('pointermove', (e) => {
   userTouched = performance.now();
   if (pointers.size === 2 && drag && drag.pinch) {
     const [a, b] = [...pointers.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y);
-    camGoal.dist = clamp(drag.dist0 * drag.pinch / Math.max(d, 1), view === 'frog' ? 0.09 : 0.8, 16);
+    const [zl, zh] = zoomLim();
+    camGoal.dist = clamp(drag.dist0 * drag.pinch / Math.max(d, 1), zl, zh); syncZoomUI();
     return;
   }
   if (!drag) return;
@@ -4600,7 +4609,8 @@ canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', (e) => { pointers.delete(e.pointerId); uiRevealTaps.delete(e.pointerId); drag = null; });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault(); userTouched = performance.now();
-  camGoal.dist = clamp(camGoal.dist * Math.exp(e.deltaY * 0.0012), view === 'frog' ? 0.09 : 0.8, 16);
+  const [zl, zh] = zoomLim();
+  camGoal.dist = clamp(camGoal.dist * Math.exp(e.deltaY * 0.0012), zl, zh); syncZoomUI();
 }, { passive: false });
 const ray = new THREE.Raycaster();
 function tap(cx, cy) {
@@ -7036,6 +7046,11 @@ $('t-noon').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], 't-n
 $('t-evening').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], 't-evening'); setLight('evening'); };
 $('snd-btn').onclick = () => sndSet(!SND.on);
 { const vol = $('vol'); vol.value = String(Math.round(SND.vol * 100)); vol.addEventListener('input', () => sndVolume(vol.value / 100)); }
+{ const z = $('zoom');
+  z.addEventListener('input', () => { const [a, b] = zoomLim(); camGoal.dist = b * Math.pow(a / b, z.value / 1000); userTouched = performance.now(); });
+  z.addEventListener('pointerdown', () => { z._drag = true; });
+  const up = () => { z._drag = false; }; z.addEventListener('pointerup', up); z.addEventListener('pointercancel', up); z.addEventListener('blur', up);
+  syncZoomUI(); }
 $('snd-btn').setAttribute('aria-pressed', String(SND.on)); $('snd-btn').title = SND.on ? '音を消す' : '音を出す';
 $('info-btn').onclick = () => { const p = $('info'); p.hidden = !p.hidden; $('info-btn').setAttribute('aria-expanded', String(!p.hidden)); uiShow(p.hidden ? 2500 : 0); };
 
@@ -7065,14 +7080,24 @@ addEventListener('pointermove', (e) => {
   else if (uiHover) { uiHover = false; uiHideT = setTimeout(uiMaybeHide, 450); }
 }, { passive: true });
 document.documentElement.addEventListener('mouseleave', () => { if (uiHover) { uiHover = false; uiHideT = setTimeout(uiMaybeHide, 600); } });
+// a touch that brings the strip out must not also press whatever button slides in under the finger: the strip ignores
+// touches until that finger lifts (and the slide-in has finished)
+let uiArmPid = -1, uiArmUntil = 0, uiArmT = 0;
+function uiDisarm() { clearTimeout(uiArmT); const w = uiArmUntil - performance.now(); if (w > 0) { uiArmT = setTimeout(uiDisarm, w); return; } barEl.classList.remove('arming'); uiArmPid = -1; }
 addEventListener('pointerdown', (e) => {
   if (e.pointerType === 'mouse') return;
   const onBar = barEl.contains(e.target);
-  if (!uiOn && !onBar && e.clientY < UI_TOP_ZONE) uiRevealTaps.add(e.pointerId);
+  if (!uiOn && !onBar) {
+    if (e.clientY < UI_TOP_ZONE) uiRevealTaps.add(e.pointerId);
+    barEl.classList.add('arming'); uiArmPid = e.pointerId; uiArmUntil = performance.now() + 420; clearTimeout(uiArmT);
+  }
   if (onBar) uiHold = true;
   uiShow(UI_TOUCH_MS);
 }, { capture: true });
-const uiRelease = () => { if (uiHold) { uiHold = false; uiShow(UI_TOUCH_MS); } };
+const uiRelease = (e) => {
+  if (e.pointerId === uiArmPid) { uiArmUntil = Math.max(uiArmUntil, performance.now() + 90); uiDisarm(); }
+  if (uiHold) { uiHold = false; uiShow(UI_TOUCH_MS); }
+};
 addEventListener('pointerup', uiRelease, { capture: true }); addEventListener('pointercancel', uiRelease, { capture: true });
 barEl.addEventListener('focusin', (e) => { if (e.target.matches(':focus-visible')) { uiFocus = true; uiShow(); } });
 barEl.addEventListener('focusout', () => { if (uiFocus) { uiFocus = false; uiHideT = setTimeout(uiMaybeHide, 800); } });

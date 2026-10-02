@@ -27,6 +27,7 @@ body{margin:0;background:var(--deep);color:var(--ink);font-family:var(--f-ui);ov
 .title p{margin:6px 0 0;font-size:12px;letter-spacing:.1em;color:var(--ink-2)}
 .bar{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 12px);transform:translate(-50%,calc(-100% - 26px));opacity:0;pointer-events:none;transition:transform .38s cubic-bezier(.2,.8,.2,1),opacity .28s;display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:6px 10px;width:max-content;max-width:calc(100% - 32px);box-sizing:border-box;padding:6px 8px;border-radius:16px;background:var(--glass);border:1px solid var(--line);-webkit-backdrop-filter:blur(14px) saturate(1.15);backdrop-filter:blur(14px) saturate(1.15)}
 .ui-on .bar{transform:translate(-50%,0);opacity:1;pointer-events:auto}
+.ui-on .bar.arming{pointer-events:none}
 /* a small grabber marks where the strip is hiding */
 .grab{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 7px);width:46px;height:5px;margin-left:-23px;border-radius:3px;background:rgba(243,239,230,.42);box-shadow:0 1px 8px rgba(0,0,0,.35);pointer-events:none;transition:opacity .3s}
 .ui-on .grab{opacity:0}
@@ -45,12 +46,15 @@ body{margin:0;background:var(--deep);color:var(--ink);font-family:var(--f-ui);ov
 #snd-btn[aria-pressed="true"] .off,#snd-btn[aria-pressed="false"] .on{display:none}
 #snd-btn[aria-pressed="false"]{color:var(--ink-3)}
 .snd{gap:2px}
-#vol{-webkit-appearance:none;appearance:none;width:92px;height:34px;margin:0 6px 0 0;background:transparent;cursor:pointer;touch-action:none}
-#vol::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:rgba(243,239,230,.24)}
-#vol::-moz-range-track{height:3px;border-radius:2px;background:rgba(243,239,230,.24)}
-#vol::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;margin-top:-6px;border-radius:50%;background:var(--ink);box-shadow:0 0 0 3px rgba(238,168,188,.35)}
-#vol::-moz-range-thumb{width:15px;height:15px;border:0;border-radius:50%;background:var(--ink);box-shadow:0 0 0 3px rgba(238,168,188,.35)}
-#vol:focus-visible{outline:2px solid var(--lotus);outline-offset:2px;border-radius:6px}
+#vol,#zoom{-webkit-appearance:none;appearance:none;width:92px;height:34px;margin:0 6px 0 0;background:transparent;cursor:pointer;touch-action:none}
+#zoom{width:108px;margin:0 2px 0 4px}
+.zm{gap:2px}
+.zm .ico{display:none;width:16px;height:16px;margin-left:4px;fill:none;stroke:var(--ink-2);stroke-width:1.6;stroke-linecap:round}
+#vol::-webkit-slider-runnable-track,#zoom::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:rgba(243,239,230,.24)}
+#vol::-moz-range-track,#zoom::-moz-range-track{height:3px;border-radius:2px;background:rgba(243,239,230,.24)}
+#vol::-webkit-slider-thumb,#zoom::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;margin-top:-6px;border-radius:50%;background:var(--ink);box-shadow:0 0 0 3px rgba(238,168,188,.35)}
+#vol::-moz-range-thumb,#zoom::-moz-range-thumb{width:15px;height:15px;border:0;border-radius:50%;background:var(--ink);box-shadow:0 0 0 3px rgba(238,168,188,.35)}
+#vol:focus-visible,#zoom:focus-visible{outline:2px solid var(--lotus);outline-offset:2px;border-radius:6px}
 .bar .cnt{font-size:10px;letter-spacing:0;margin-left:3px;color:var(--ink-2);font-variant-numeric:tabular-nums}
 button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 .hint{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);font-size:12px;letter-spacing:.08em;color:var(--ink);background:var(--glass);border:1px solid var(--line);padding:8px 14px;border-radius:999px;white-space:nowrap;pointer-events:none;transition:opacity .8s;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
@@ -71,7 +75,8 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
   .lbl{display:none}
   .bar{gap:6px;padding:5px}
   .bar button{padding:0 8px;min-width:36px}
-  #vol{width:80px}
+  #vol,#zoom{width:80px}
+  .zm .ico{display:block}
 }
 @media (prefers-reduced-motion:reduce){.hint,.loading,.bar,.bar button,.grab,.title{transition:none}}
 </style>
@@ -85,6 +90,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
       <button id="v-pond" type="button" aria-pressed="true">池</button><button id="v-frog" type="button" aria-pressed="false" title="押すたびに次のカエルへ">カエル</button><button id="v-low" type="button" aria-pressed="false">水面</button>
     </div>
   </div>
+  <div class="grp zm"><span class="lbl">ズーム</span><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.6"/><path d="M10.2 10.2L14 14"/></svg><input id="zoom" type="range" min="0" max="1000" step="1" value="200" aria-label="ズーム（左で引き、右で寄り）"></div>
   <div class="grp"><span class="lbl">光</span>
     <div class="seg" role="group" aria-label="時間帯">
       <button id="t-morning" type="button" aria-pressed="false">朝</button><button id="t-noon" type="button" aria-pressed="true">昼</button><button id="t-evening" type="button" aria-pressed="false">夕</button>
@@ -119,6 +125,6 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
     <dt>ススキ</dt><dd>対岸の株。穂は絹毛の房の集まりで、逆光（とくに夕方）で透けて光る。突風が来ると草も木もなびき、紅葉が一斉に散り、水面にさざ波が走る</dd>
     <dt>カエル</dt><dd>ニホンアマガエル五匹（普通の緑色が二匹、黄色の色素を持たない水色が三匹。うち二匹は1.5倍と2倍の大きなメス）を SDF レイマーチングで描画。指先の吸盤、目を通る黒い筋、鳴嚢を膨らませて鳴く様子、呼吸・まばたき・葉から葉への跳躍。ときどき水へ飛び込み、蹴り→滑走→脚の引き戻しの平泳ぎで別の葉まで泳いで這い上がる</dd>
   </dl>
-  <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイールで拡大。水面をタップすると餌を一粒、カエルをタップすると跳びます。「カエル」は押すたびに次の一匹へ移ります。</p>
+  <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒、カエルをタップすると跳びます。「カエル」は押すたびに次の一匹へ移ります。</p>
 </aside>
 <div class="loading" id="loading"><div>池に水を張っています<small id="load-sub">シェーダーを準備中</small></div></div>
