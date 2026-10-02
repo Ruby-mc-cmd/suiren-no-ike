@@ -142,7 +142,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
     <dt>見守る</dt><dd>「カエル」で一匹を追っている間は、左下に名札が出る。生まれてからの日数と時間、育ち具合、体長、おなかの具合。メニューの「餌」を「オタマ」にして水面をタップすると、オタマジャクシの餌が沈んでいき、底に着くと近くのオタマジャクシが集まって食べる</dd>
     <dt>カエル</dt><dd>ニホンアマガエル（同時に最大8匹）を SDF レイマーチングで描画。ふつうは緑色で、まれに黄色の色素を持たない水色が生まれる。メスはオスより大きく育つ。指先の吸盤、目を通る黒い筋、鳴嚢を膨らませて鳴く様子、呼吸・まばたき・葉から葉への跳躍。ときどき水へ飛び込み、蹴り→滑走→脚の引き戻しの平泳ぎで別の葉まで泳いで這い上がる</dd>
   </dl>
-  <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒（メニューの「餌」で鯉の餌とオタマジャクシの餌を切り替え）、カエルをタップすると跳びます。「カエル」は押すたびに次の一匹へ移り、カエルのあとはオタマジャクシを順に追います。追っている間は、ほかのカエルやオタマジャクシをタップするとそちらを追います。</p>
+  <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒（メニューの「餌」で鯉の餌とオタマジャクシの餌を切り替え）、カエルをタップすると跳びます。「カエル」は押すたびに、カエルもオタマジャクシも番号（No.）の小さい順に次の一匹へ移ります。追っている間は、ほかのカエルやオタマジャクシをタップするとそちらを追います。</p>
 </aside>
 <div class="loading" id="loading"><div>池に水を張っています<small id="load-sub">シェーダーを準備中</small><div class="lbar" id="load-prog" role="progressbar" aria-label="シェーダーのコンパイル" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="load-bar"></i></div><small id="load-pct">0%</small></div></div>
 <script type="module">
@@ -4446,9 +4446,10 @@ function removeFrog(f) {
 let focus = null, frog = null;
 function setFocus(kind, ref) { focus = ref ? { kind, ref } : null; frog = kind === 'frog' ? ref : null; if (typeof frogLabel === 'function') frogLabel(); }
 function focusLost(old) {
-  // the one being watched has gone: follow another, or go back to the pond
-  const next = frogs.find((o) => o !== old) || (typeof tadpoles !== 'undefined' && tadpoles.find((o) => o !== old && o.st !== 'dead'));
-  if (next) setFocus(frogs.includes(next) ? 'frog' : 'tad', next); else { setFocus(null, null); if (view === 'frog') { setView('pond'); pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); } }
+  // the one being watched has gone: follow the next one by number, or go back to the pond
+  const list = (typeof tadpoles !== 'undefined' ? watchList() : frogs.map((o) => ['frog', o])).filter(([, o]) => o !== old);
+  const next = list.find(([, o]) => old && o.id > old.id) || list[0];
+  if (next) setFocus(next[0], next[1]); else { setFocus(null, null); if (view === 'frog') { setView('pond'); pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); } }
 }
 const tmpM = new THREE.Matrix4(), tmpM2 = new THREE.Matrix4(), tmpV = V3();
 function vlerp(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
@@ -7096,9 +7097,11 @@ function lifeFresh() {
   worldH = 0; tadpoles.length = 0; eggs.length = 0; tfood.length = 0;
   for (const f of frogs.slice()) removeFrog(f);
   algaeReset();
+  lifeId = 1;
+  // numbered group by group, so that following them in order of their numbers keeps to one place for a while
   const groups = [shallowSpot(), shallowSpot(), shallowSpot()];
   for (let i = 0; i < LIFE.START; i++) {
-    const [gx, gz] = groups[i % 3], [x, z] = shallowSpot(gx, gz, 0.45);
+    const g = Math.min(2, Math.floor(i * 3 / LIFE.START)), [gx, gz] = groups[g], [x, z] = shallowSpot(gx, gz, 0.45);
     const age = lr(0, 30);
     makeTadpole({ x, z, dev: age, born: -age, energy: lr(0.45, 0.7) });
   }
@@ -7195,8 +7198,10 @@ function lifeTitle() {
   if (ne) bits.push(`卵${kanji(ne)}個`);
   const s = bits.join('・'); if (el.textContent !== s) el.textContent = s;
 }
-// everything the "カエル" view can follow, in order: frogs, then tadpoles
-function watchList() { return [...frogs.filter((f) => !f.dying).map((f) => ['frog', f]), ...tadpoles.filter((T) => T.st !== 'dead').map((T) => ['tad', T])]; }
+// everything the "カエル" view can follow, frogs and tadpoles together, in the order of their numbers (No.)
+function watchList() {
+  return [...frogs.filter((f) => !f.dying).map((f) => ['frog', f]), ...tadpoles.filter((T) => T.st !== 'dead').map((T) => ['tad', T])].sort((a, b) => a[1].id - b[1].id);
+}
 
 function updateParticles(dt) {
   const A = partAttr.array; let n = 0;
@@ -8224,8 +8229,8 @@ function pressIn(ids, id) { for (const x of ids) $(x).setAttribute('aria-pressed
 function frogLabel() {
   const b = $('v-frog'); if (!b) return;
   if (view !== 'frog' || !focus) { b.textContent = 'カエル'; return; }
-  const list = focus.kind === 'frog' ? frogs.filter((f) => !f.dying) : tadpoles.filter((T) => T.st !== 'dead');
-  b.innerHTML = `${focus.kind === 'frog' ? 'カエル' : 'オタマ'}<span class="cnt">${Math.max(1, list.indexOf(focus.ref) + 1)}/${list.length}</span>`;
+  const list = watchList(), k = list.findIndex(([, o]) => o === focus.ref);
+  b.innerHTML = `${focus.kind === 'frog' ? 'カエル' : 'オタマ'}<span class="cnt">${Math.max(1, k + 1)}/${list.length}</span>`;
 }
 $('v-pond').onclick = () => { pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); setView('pond'); frogLabel(); };
 $('v-frog').onclick = () => {

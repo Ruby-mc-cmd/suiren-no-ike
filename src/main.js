@@ -4298,9 +4298,10 @@ function removeFrog(f) {
 let focus = null, frog = null;
 function setFocus(kind, ref) { focus = ref ? { kind, ref } : null; frog = kind === 'frog' ? ref : null; if (typeof frogLabel === 'function') frogLabel(); }
 function focusLost(old) {
-  // the one being watched has gone: follow another, or go back to the pond
-  const next = frogs.find((o) => o !== old) || (typeof tadpoles !== 'undefined' && tadpoles.find((o) => o !== old && o.st !== 'dead'));
-  if (next) setFocus(frogs.includes(next) ? 'frog' : 'tad', next); else { setFocus(null, null); if (view === 'frog') { setView('pond'); pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); } }
+  // the one being watched has gone: follow the next one by number, or go back to the pond
+  const list = (typeof tadpoles !== 'undefined' ? watchList() : frogs.map((o) => ['frog', o])).filter(([, o]) => o !== old);
+  const next = list.find(([, o]) => old && o.id > old.id) || list[0];
+  if (next) setFocus(next[0], next[1]); else { setFocus(null, null); if (view === 'frog') { setView('pond'); pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); } }
 }
 const tmpM = new THREE.Matrix4(), tmpM2 = new THREE.Matrix4(), tmpV = V3();
 function vlerp(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
@@ -6948,9 +6949,11 @@ function lifeFresh() {
   worldH = 0; tadpoles.length = 0; eggs.length = 0; tfood.length = 0;
   for (const f of frogs.slice()) removeFrog(f);
   algaeReset();
+  lifeId = 1;
+  // numbered group by group, so that following them in order of their numbers keeps to one place for a while
   const groups = [shallowSpot(), shallowSpot(), shallowSpot()];
   for (let i = 0; i < LIFE.START; i++) {
-    const [gx, gz] = groups[i % 3], [x, z] = shallowSpot(gx, gz, 0.45);
+    const g = Math.min(2, Math.floor(i * 3 / LIFE.START)), [gx, gz] = groups[g], [x, z] = shallowSpot(gx, gz, 0.45);
     const age = lr(0, 30);
     makeTadpole({ x, z, dev: age, born: -age, energy: lr(0.45, 0.7) });
   }
@@ -7047,8 +7050,10 @@ function lifeTitle() {
   if (ne) bits.push(`卵${kanji(ne)}個`);
   const s = bits.join('・'); if (el.textContent !== s) el.textContent = s;
 }
-// everything the "カエル" view can follow, in order: frogs, then tadpoles
-function watchList() { return [...frogs.filter((f) => !f.dying).map((f) => ['frog', f]), ...tadpoles.filter((T) => T.st !== 'dead').map((T) => ['tad', T])]; }
+// everything the "カエル" view can follow, frogs and tadpoles together, in the order of their numbers (No.)
+function watchList() {
+  return [...frogs.filter((f) => !f.dying).map((f) => ['frog', f]), ...tadpoles.filter((T) => T.st !== 'dead').map((T) => ['tad', T])].sort((a, b) => a[1].id - b[1].id);
+}
 
 function updateParticles(dt) {
   const A = partAttr.array; let n = 0;
@@ -8076,8 +8081,8 @@ function pressIn(ids, id) { for (const x of ids) $(x).setAttribute('aria-pressed
 function frogLabel() {
   const b = $('v-frog'); if (!b) return;
   if (view !== 'frog' || !focus) { b.textContent = 'カエル'; return; }
-  const list = focus.kind === 'frog' ? frogs.filter((f) => !f.dying) : tadpoles.filter((T) => T.st !== 'dead');
-  b.innerHTML = `${focus.kind === 'frog' ? 'カエル' : 'オタマ'}<span class="cnt">${Math.max(1, list.indexOf(focus.ref) + 1)}/${list.length}</span>`;
+  const list = watchList(), k = list.findIndex(([, o]) => o === focus.ref);
+  b.innerHTML = `${focus.kind === 'frog' ? 'カエル' : 'オタマ'}<span class="cnt">${Math.max(1, k + 1)}/${list.length}</span>`;
 }
 $('v-pond').onclick = () => { pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); setView('pond'); frogLabel(); };
 $('v-frog').onclick = () => {
