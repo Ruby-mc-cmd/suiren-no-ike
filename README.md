@@ -19,6 +19,7 @@ Three.js (r170) で作った、日本庭園の小さな池です。鯉十二尾�
 | `src/head.html` | 画面の文字、ボタン、説明パネル（「仕組み」）、CSS |
 | `build.py` | 2つを1枚にまとめて `dist/` に書き出す |
 | `docs/index.html` | そのまま開ける完成版（GitHub Pages で公開しているページ） |
+| `index.html` | GitHub Pages のトップ（/）を開いたときに `docs/` へ移るための入口 |
 | `dist/pond.html` | Claude のアーティファクト用（doctype や head のない本体だけ） |
 | `test.py` | ヘッドレス Chromium で動かして撮影・検証するハーネス |
 | `tests/*.js` | 挙動の回帰テスト（泳ぎ、植生、鯉の採食、カエルの狩り、12分の長時間実行） |
