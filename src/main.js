@@ -113,7 +113,7 @@ const LIGHTS = {
   noon: { el: 54, az: 118, col: [1.0, 0.965, 0.91], I: 3.1, top: [0.24, 0.44, 0.84], hor: [0.70, 0.79, 0.90], exp: 0.88, fog: 0.016, night: 0, lamp: 0, scat: 1 },
   evening: { el: 12, az: 34, col: [1.0, 0.60, 0.32], I: 3.2, top: [0.17, 0.25, 0.50], hor: [0.98, 0.66, 0.46], exp: 1.18, fog: 0.011, night: 0, lamp: 0.3, scat: 1 },
   // a clear autumn night: the "sun" is the moon — cool and faint — under a deep blue sky full of stars; the lantern is lit
-  night: { el: 48, az: 0, col: [0.60, 0.70, 1.0], I: 0.42, top: [0.012, 0.020, 0.050], hor: [0.032, 0.046, 0.080], exp: 2.3, fog: 0.012, night: 1, lamp: 1, scat: 0.2 },
+  night: { el: 48, az: 0, col: [0.60, 0.70, 1.0], I: 0.46, top: [0.014, 0.024, 0.058], hor: [0.036, 0.052, 0.090], exp: 2.8, fog: 0.012, night: 1, lamp: 1, scat: 0.2 },
 };
 const LIGHT_KEYS = ['el', 'az', 'I', 'exp', 'fog', 'night', 'lamp', 'scat'];
 const lightCur = JSON.parse(JSON.stringify(LIGHTS.noon));
@@ -4385,6 +4385,87 @@ function splash(x, y, z, n, speed, size = 0.004) {
     parts.push({ x, y, z, vx: Math.cos(a) * v * 0.45, vy: v * rr(0.7, 1.3), vz: Math.sin(a) * v * 0.45, s: size * rr(0.6, 1.3), life: 2 });
   }
 }
+// ---------------------------------------------------------------- fireflies (ホタル)
+// At night Genji fireflies drift low over the banks and the water, and some rest in the grass. Each one flashes on a
+// slow beat of about two seconds; neighbours nudge one another's timing, so groups gradually fall into step and pulse
+// together in waves, as real ones do. They draw from their own random stream, so the seeded layout of everything else
+// is untouched.
+const FF_N = 56;
+const ffRand = (() => { let a = 0x2f6b9e31; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
+const ffR = (a, b) => a + (b - a) * ffRand();
+const ffAttr = new THREE.InstancedBufferAttribute(new Float32Array(FF_N * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const ffGeo = new THREE.InstancedBufferGeometry();
+ffGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+ffGeo.setIndex([0, 1, 2, 0, 2, 3]);
+ffGeo.setAttribute('iP', ffAttr); ffGeo.instanceCount = 0;
+const ffMesh = new THREE.Mesh(ffGeo, smat(/* glsl */`
+uniform float uViewH;
+attribute vec4 iP; varying vec2 vC; varying float vGlow; varying float vCore;
+void main(){
+  vec4 vc = viewMatrix * vec4(iP.xyz, 1.0);
+  float mpp = 2.0 * max(-vc.z, 0.01) / (uViewH * projectionMatrix[1][1]);   // metres per pixel at this depth
+  float R = max(0.07, mpp * 7.0), core = max(0.004, mpp * 1.3);              // never smaller than a few pixels
+  vC = position.xy; vGlow = iP.w; vCore = core / R;
+  gl_Position = projectionMatrix * (vc + vec4(position.xy * R, 0.0, 0.0));
+}`, /* glsl */`
+${GL_COMMON}
+varying vec2 vC; varying float vGlow; varying float vCore;
+void main(){
+  float r = length(vC); if (r > 1.0 || vGlow < 0.003) discard;
+  float x = r / vCore;
+  float core = exp(-x * x * 1.4);                       // the lantern in its tail
+  float halo = exp(-r * r * 5.0) * 0.16 + exp(-r * r * 18.0) * 0.32;
+  float vis = smoothstep(0.3, 0.85, uNight);
+  vec3 c = vec3(0.60, 1.0, 0.16) * vGlow * vis * (core * 1.7 + halo);
+  gl_FragColor = vec4(c, 1.0);
+}`, { uViewH: G.uViewH }, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+ffMesh.frustumCulled = false; ffMesh.renderOrder = 6;
+onLayers(ffMesh, LAYER.MAIN, LAYER.REFL); scene.add(ffMesh);
+const fireflies = [];
+for (let i = 0; i < FF_N; i++) {
+  const th = ffR(0, TAU), off = ffR(-0.8, 1.3), p = polarAt(th, off);
+  fireflies.push({ x: p.x, y: 0.5, z: p.z, vx: 0, vy: 0, vz: 0, th, off, h: ffR(0.15, 1.2), rest: ffRand() < 0.3, restT: ffR(4, 30),
+    ph: ffRand(), w: 1 / ffR(1.9, 2.4), seed: ffR(0, 100), glow: 0 });
+}
+const ffGround = (x, z) => (pondSDF(x, z) > 0 ? terrainH(x, z) : 0);
+function ffFlash(ph) { return ph < 0.12 ? smooth(0, 0.12, ph) : ph < 0.3 ? 1 : ph < 0.58 ? 1 - smooth(0.3, 0.58, ph) : 0; }
+function updateFireflies(dt, t) {
+  if (G.uNight.value < 0.3) { ffGeo.instanceCount = 0; return; }
+  const A = ffAttr.array;
+  for (let i = 0; i < FF_N; i++) {
+    const f = fireflies[i];
+    // timing: pulled towards the neighbours' beat (a few metres around)
+    let c = 0, n = 0;
+    for (let j = 0; j < FF_N; j++) { if (j === i) continue; const o = fireflies[j], dx = o.x - f.x, dz = o.z - f.z; if (dx * dx + dz * dz < 4) { c += Math.sin(TAU * (o.ph - f.ph)); n++; } }
+    f.ph += dt * (f.w * (f.rest ? 0.8 : 1) + (n ? 0.5 * c / n : 0));
+    f.ph -= Math.floor(f.ph);
+    f.glow = ffFlash(f.ph) * (f.rest ? 0.55 : 1);
+    if (f.rest) {
+      // sitting on a grass blade: a slight sway, then off again after a while
+      f.restT -= dt;
+      if (f.restT <= 0) { f.rest = false; f.restT = ffR(15, 60); f.vy = 0.15; }
+    } else {
+      // a slow, meandering flight around a home spot that creeps along the bank
+      f.th += dt * 0.012 * Math.sin(t * 0.05 + f.seed);
+      const home = polarAt(f.th, f.off);
+      const nx = vnoise2(t * 0.35 + f.seed, f.seed * 1.7) - 0.5, nz = vnoise2(f.seed * 2.3, t * 0.35 + f.seed) - 0.5;
+      f.vx += (nx * 0.9 + (home.x - f.x) * 0.25 - f.vx * 0.8) * dt;
+      f.vz += (nz * 0.9 + (home.z - f.z) * 0.25 - f.vz * 0.8) * dt;
+      const gy = ffGround(f.x, f.z), ty = gy + f.h + 0.15 * Math.sin(t * 0.4 + f.seed);
+      f.vy += ((ty - f.y) * 0.8 - f.vy * 1.2) * dt;
+      f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;
+      if (f.y < gy + 0.06) { f.y = gy + 0.06; f.vy = Math.abs(f.vy) * 0.3; }
+      f.restT -= dt;
+      if (f.restT <= 0 && pondSDF(f.x, f.z) > 0.1) { f.rest = true; f.restT = ffR(6, 25); f.y = gy + ffR(0.06, 0.3); f.vx = f.vz = f.vy = 0; }
+    }
+    A[i * 4] = f.x; A[i * 4 + 1] = f.y + (f.rest ? 0.004 * Math.sin(t * 1.3 + f.seed) : 0); A[i * 4 + 2] = f.z; A[i * 4 + 3] = f.glow;
+  }
+  ffGeo.instanceCount = FF_N; ffAttr.needsUpdate = true;
+}
+const vnoise2 = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const h = (a, b) => { const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return s - Math.floor(s); };
+  return (h(xi, yi) * (1 - u) + h(xi + 1, yi) * u) * (1 - v) + (h(xi, yi + 1) * (1 - u) + h(xi + 1, yi + 1) * u) * v; };
+
 const MAXF = 64;
 const FOOD_R = 0.0125 * 2 / 3;   // pellet radius
 const foodAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAXF * 4), 4).setUsage(THREE.DynamicDrawUsage);
@@ -6603,6 +6684,7 @@ function update(dt) {
   sndUpdate(dt);
   writePadAttrs(t);
   updateParticles(dt);
+  updateFireflies(dt, t);
   ambient(dt);
 }
 let PROF = null;
