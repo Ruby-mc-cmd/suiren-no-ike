@@ -4,7 +4,7 @@ Three.js (r170) で作った、日本庭園の小さな池です。鯉十二尾�
 
 ## 開き方
 
-`dist/index.html` をブラウザで開きます。three.js を CDN（jsdelivr）から読み込むので、ネット接続が必要です。
+**https://ruby-mc-cmd.github.io/suiren-no-ike/** で動きます（GitHub Pages）。手元で見るなら `docs/index.html` をブラウザで開きます。どちらも three.js を CDN（jsdelivr）から読み込むので、ネット接続が必要です。
 
 - **視点**：池（全体）／カエル（1匹を追う）／水面
 - **光**：朝・昼・夕。睡蓮は朝と夕方には閉じぎみになります
@@ -18,7 +18,7 @@ Three.js (r170) で作った、日本庭園の小さな池です。鯉十二尾�
 | `src/main.js` | シーンのすべて（水・光・鯉・カエル・アメンボ・植物・音・UI） |
 | `src/head.html` | 画面の文字、ボタン、説明パネル（「仕組み」）、CSS |
 | `build.py` | 2つを1枚にまとめて `dist/` に書き出す |
-| `dist/index.html` | そのまま開ける完成版 |
+| `docs/index.html` | そのまま開ける完成版（GitHub Pages で公開しているページ） |
 | `dist/pond.html` | Claude のアーティファクト用（doctype や head のない本体だけ） |
 | `test.py` | ヘッドレス Chromium で動かして撮影・検証するハーネス |
 | `tests/*.js` | 挙動の回帰テスト（泳ぎ、植生、鯉の採食、カエルの狩り、12分の長時間実行） |
@@ -35,7 +35,7 @@ Three.js (r170) で作った、日本庭園の小さな池です。鯉十二尾�
 ## ビルドとテスト
 
 ```sh
-python3 build.py                     # src/ → dist/pond.html, dist/index.html
+python3 build.py                     # src/ → dist/pond.html, docs/index.html
 
 # テストには Playwright と、three.js のローカルコピーが必要
 pip install playwright && playwright install chromium
