@@ -4592,11 +4592,12 @@ function endPointer(e) {
   const p = pointers.get(e.pointerId);
   pointers.delete(e.pointerId);
   canvas.classList.remove('dragging');
-  if (p && drag && !drag.moved && pointers.size === 0 && performance.now() - p.t < 500) tap(e.clientX, e.clientY);
+  const reveal = uiRevealTaps.delete(e.pointerId);
+  if (p && drag && !drag.moved && pointers.size === 0 && performance.now() - p.t < 500 && !reveal) tap(e.clientX, e.clientY);
   if (pointers.size === 0) drag = null;
 }
 canvas.addEventListener('pointerup', endPointer);
-canvas.addEventListener('pointercancel', (e) => { pointers.delete(e.pointerId); drag = null; });
+canvas.addEventListener('pointercancel', (e) => { pointers.delete(e.pointerId); uiRevealTaps.delete(e.pointerId); drag = null; });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault(); userTouched = performance.now();
   camGoal.dist = clamp(camGoal.dist * Math.exp(e.deltaY * 0.0012), view === 'frog' ? 0.09 : 0.8, 16);
@@ -7036,11 +7037,52 @@ $('t-evening').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], '
 $('snd-btn').onclick = () => sndSet(!SND.on);
 { const vol = $('vol'); vol.value = String(Math.round(SND.vol * 100)); vol.addEventListener('input', () => sndVolume(vol.value / 100)); }
 $('snd-btn').setAttribute('aria-pressed', String(SND.on)); $('snd-btn').title = SND.on ? '音を消す' : '音を出す';
-$('info-btn').onclick = () => { const p = $('info'); p.hidden = !p.hidden; $('info-btn').setAttribute('aria-expanded', String(!p.hidden)); };
+$('info-btn').onclick = () => { const p = $('info'); p.hidden = !p.hidden; $('info-btn').setAttribute('aria-expanded', String(!p.hidden)); uiShow(p.hidden ? 2500 : 0); };
+
+// the control strip waits just above the top edge: with a mouse it slides down while the cursor is near the top; on a
+// touch screen any tap brings it out for a few seconds (a tap right at the top only does that — it drops no pellet)
+const barEl = document.querySelector('.bar'), infoEl = $('info');
+const UI_TOUCH_MS = 4000, UI_TOP_ZONE = 76;
+let uiOn = false, uiHideT = 0, uiHover = false, uiFocus = false, uiHold = false;
+const uiRevealTaps = new Set();
+function uiShow(holdMs) {
+  if (!uiOn) { uiOn = true; document.body.classList.add('ui-on'); }
+  clearTimeout(uiHideT);
+  if (holdMs) uiHideT = setTimeout(uiMaybeHide, holdMs);
+}
+function uiMaybeHide() {
+  clearTimeout(uiHideT);
+  // stay out while it is being used: cursor on it, keyboard focus in it, a finger on it, or the info panel open
+  if (uiHover || uiFocus || uiHold || !infoEl.hidden) { uiHideT = setTimeout(uiMaybeHide, 1000); return; }
+  uiOn = false; document.body.classList.remove('ui-on');
+}
+function uiBarBottom() { return barEl.offsetTop + barEl.offsetHeight; }
+function uiSetBarH() { document.documentElement.style.setProperty('--bar-h', barEl.offsetHeight + 'px'); }
+addEventListener('pointermove', (e) => {
+  if (e.pointerType !== 'mouse') return;
+  const near = uiOn ? e.clientY < uiBarBottom() + 40 : e.clientY < UI_TOP_ZONE && !e.buttons;   // no reveal mid-drag
+  if (near) { if (!uiHover || !uiOn) { uiHover = true; uiShow(); } }
+  else if (uiHover) { uiHover = false; uiHideT = setTimeout(uiMaybeHide, 450); }
+}, { passive: true });
+document.documentElement.addEventListener('mouseleave', () => { if (uiHover) { uiHover = false; uiHideT = setTimeout(uiMaybeHide, 600); } });
+addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse') return;
+  const onBar = barEl.contains(e.target);
+  if (!uiOn && !onBar && e.clientY < UI_TOP_ZONE) uiRevealTaps.add(e.pointerId);
+  if (onBar) uiHold = true;
+  uiShow(UI_TOUCH_MS);
+}, { capture: true });
+const uiRelease = () => { if (uiHold) { uiHold = false; uiShow(UI_TOUCH_MS); } };
+addEventListener('pointerup', uiRelease, { capture: true }); addEventListener('pointercancel', uiRelease, { capture: true });
+barEl.addEventListener('focusin', (e) => { if (e.target.matches(':focus-visible')) { uiFocus = true; uiShow(); } });
+barEl.addEventListener('focusout', () => { if (uiFocus) { uiFocus = false; uiHideT = setTimeout(uiMaybeHide, 800); } });
+uiSetBarH(); if (document.fonts && document.fonts.ready) document.fonts.ready.then(uiSetBarH);
+// say where the strip is, in the words of the device in hand
+if (matchMedia('(hover: hover) and (pointer: fine)').matches) hintEl.textContent = '画面の上端にカーソルを寄せるとメニュー・水面をクリックすると餌';
+else hintEl.textContent = 'タップするとメニューが出ます・水面をタップすると餌';
 canvas.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); feed(rr(-1, 1), rr(-0.6, 0.6)); }
 });
-setTimeout(hideHint, 14000);
 
 function resize(keepDPR) {
   if (!keepDPR) renderer.setPixelRatio(pickDPR());
@@ -7048,7 +7090,7 @@ function resize(keepDPR) {
   allocTargets();
   setView(view, false);
 }
-addEventListener('resize', () => { clearTimeout(resize.t); resize.t = setTimeout(() => resize(false), 120); });
+addEventListener('resize', () => { clearTimeout(resize.t); resize.t = setTimeout(() => { resize(false); uiSetBarH(); }, 120); });
 
 // ================================================================= boot
 initFrogs();
@@ -7066,7 +7108,7 @@ async function boot() {
       await renderer.compileAsync(scene, camera);
     }
     render(1 / 60);
-    if (OPTS.capture) $('loading').remove(); else $('loading').classList.add('gone');
+    if (OPTS.capture) $('loading').remove(); else { $('loading').classList.add('gone'); setTimeout(() => uiShow(3500), 700); setTimeout(hideHint, 14000); }
     API.ready = true;
   } catch (e) {
     console.error(e); API.error = String(e && e.message || e);
