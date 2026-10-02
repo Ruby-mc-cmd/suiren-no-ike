@@ -1,4 +1,4 @@
-# [睡蓮の池](https://ruby-mc-cmd.github.io/suiren-no-ike/)
+# [睡蓮の池](https://ruby-mc-cmd.github.io/suiren-no-ike/docs/)
 
 Three.js (r170) で作った、日本庭園の小さな池です。鯉十二尾、睡蓮、アマガエル五匹、アメンボがいます。画像ファイルも音声ファイルも使わず、HTML 1枚で動きます。
 
