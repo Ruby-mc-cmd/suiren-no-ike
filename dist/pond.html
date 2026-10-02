@@ -144,6 +144,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
     <dt>ガマ</dt><dd>池の両端の浅瀬。茶色い穂の一部が熟して綿毛がはじけ、風、とくに突風が吹くと種が池の上を漂って水面に落ちる</dd>
     <dt>ススキ</dt><dd>対岸の株。穂は絹毛の房の集まりで、逆光（とくに夕方）で透けて光る。突風が来ると草も木もなびき、紅葉が一斉に散り、水面にさざ波が走る</dd>
     <dt>カエルの一生</dt><dd>池の中では1秒が1時間で、卵からおよそ50日（20分）で大人のカエルになる。卵は3日でふ化し、オタマジャクシは池の底の藻を食べて育ち、後ろ足、前足の順に生えて、26日ほどで睡蓮の葉に上がる。上がった子ガエルはしっぽが縮んで消えるまで何も食べず、そのあとアメンボを捕って大きくなり、大人になってもゆっくり育ち続ける。藻はゆっくりしか戻らないので取り合いになる。大きいものが先に食べ、飢えたものは弱ったものをかじり、死んだものはほかが食べ、深みへ出たものは鯉に食べられるので、カエルになれるのはほんの一部。葉の上がいっぱい（カエルが8匹）のときは、岸から池の外へ旅立っていく。大人のメスはオスと連れ立って浅瀬へ泳いで行き、卵を産む。寿命は一匹ずつ違い、アメンボが捕れなければ飢えても死ぬ。全部いなくなると、新しい卵がどこからか現れる。様子はこの端末のブラウザに保存され、次に開くと続きから始まる（閉じている間は進まない）</dd>
+    <dt>アオサギ</dt><dd>昼間、ときどき木の上を越えて飛んできて、岸や浅瀬に降りる。背を伸ばしてあたりを見回し、首をS字に縮めてゆっくり歩き、じっと狙いを定めてくちばしで一突きする。浅瀬のオタマジャクシや葉の上のカエルを捕り、カエルは上を向いて飲み込む。届く獲物がいなければ、短く飛んで場所を変える。カエルは近づくアオサギに気づくと身をかたくして鳴きやみ、水に飛び込んで遠くの葉へ逃げたり、突かれる瞬間に跳んでかわしたりする。オタマジャクシはくちばしから散り、鯉は離れて深みへ。何匹か捕るか、しばらくすると、しわがれた声で鳴いて飛び去る（近くをタップすると驚いて飛び立つ）。夜は来ない</dd>
     <dt>見守る</dt><dd>「カエル」で一匹を追っている間は、左下に名札が出る（メニューの「名札」で出す・消すを切り替え）。生まれてからの日数と時間、育ち具合、体長、おなかの具合。メニューの「餌」を「オタマ」にして水面をタップすると、オタマジャクシの餌が沈んでいき、底に着くと近くのオタマジャクシが集まって食べる</dd>
     <dt>カエル</dt><dd>ニホンアマガエル（同時に最大8匹）を SDF レイマーチングで描画。ふつうは緑色で、まれに黄色の色素を持たない水色が生まれる。メスはオスより大きく育つ。指先の吸盤、目を通る黒い筋、鳴嚢を膨らませて鳴く様子、呼吸・まばたき・葉から葉への跳躍。ときどき水へ飛び込み、蹴り→滑走→脚の引き戻しの平泳ぎで別の葉まで泳いで這い上がる</dd>
   </dl>
@@ -5048,6 +5049,7 @@ function tap(cx, cy) {
   const ndc = new THREE.Vector2(cx / innerWidth * 2 - 1, -(cy / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, camera);
   const o = ray.ray.origin, d = ray.ray.direction;
+  if (heronTapped(o, d)) { hideHint(); return; }
   if (d.y >= -1e-4) return;
   // frogs first: tapping one makes it jump
   let hitF = null, bestP = 1e9;
@@ -5276,6 +5278,8 @@ function updateKoi(dt, t) {
       if (d < 1.8) { cx += o.pos.x; cz += o.pos.z; ax2 += Math.cos(o.yaw); az2 += Math.sin(o.yaw); nb++; }
     }
     if (nb) { dx += ax2 / nb * 0.35; dz += az2 / nb * 0.35; const coh = 0.35; dx += (cx / nb - k.pos.x) * coh; dz += (cz / nb - k.pos.z) * coh; }
+    // a heron wading in the shallows: keep well away from it, down deep
+    if (heron.inWater) { const ox = k.pos.x - heron.x, oz = k.pos.z - heron.z, d = Math.hypot(ox, oz) || 1; if (d < 1.7) { const f = (1.7 - d) * 5; dx += ox / d * f; dz += oz / d * f; if (d < 1.2) k.depthGoal = -0.42; } }
     // food
     let targetSpeed = k.lazy ? 0.045 : 0.10 + 0.05 * Math.sin(k.wt * 0.3 + k.i);
     let feeding = false, chasing = false;
@@ -5804,6 +5808,8 @@ function updateFrog(f, dt, t) {
       strDisturb(nx, nz, 0.2, 0.6);
       f.state = 'air'; f.t = 0;
     }
+  } else if (f.state === 'held') {
+    heronHoldFrog(f);
   } else if (f.state === 'land') {
     const tp = pads[f.pad];
     const [x, z] = frogPadWorld(tp, f.lx, f.lz);
@@ -6512,7 +6518,7 @@ const LIFE = {
 let worldH = 0;                        // hours since this pond began
 let lifeOff = false;                   // tests switch the life cycle off
 const tadpoles = [], eggs = [], tfood = [];
-const lifeStats = { hatched: 0, starved: 0, eaten: 0, bitten: 0, koi: 0, left: 0, climbed: 0, frogDied: 0, frogOld: 0, frogStarved: 0, laid: 0, pops: 0 };
+const lifeStats = { hatched: 0, starved: 0, eaten: 0, bitten: 0, koi: 0, heron: 0, left: 0, climbed: 0, frogDied: 0, frogOld: 0, frogStarved: 0, laid: 0, pops: 0 };
 const smooth01 = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const floorY = (x, z) => Math.min(terrainH(x, z), -0.02);
 
@@ -6819,6 +6825,8 @@ function updateTadpoles(dt, t) {
       }
     }
     if (T.st === 'gone') continue;
+    // and from the heron's bill
+    if (heron.threat) { const hx = heron.threat[0], hz = heron.threat[1], d = Math.hypot(hx - T.x, hz - T.z); if (d < 0.32) { kx += (T.x - hx) * 2; kz += (T.z - hz) * 2; kn++; } }
     if (kn) T.flee = 1.2;
     // what does it want?
     let gx = T.tx, gz = T.tz, gy = floorY(T.x, T.z) + 0.006 + L * 0.12, speed = 0.035 + 0.05 * sizeK;
@@ -7120,7 +7128,7 @@ function lifeSave() {
     const r = (v, k = 1000) => Math.round(v * k) / k;
     const data = { v: 1, t: r(worldH, 10), id: lifeId,
       tads: tadpoles.filter((T) => T.st !== 'dead').map((T) => [T.id, r(T.born, 10), r(T.dev, 10), r(T.x), r(T.z), r(T.y), r(T.energy), r(T.health), T.green ? 1 : 0, r(T.seed)]),
-      frogs: frogs.filter((f) => !f.dying).map((f) => [f.id, r(f.born, 10), r(f.dev, 10), f.male ? 1 : 0, f.green ? 1 : 0, r(f.size), r(f.maxSize), r(f.energy), r(f.health), r(f.life, 10), r(f.cool, 10), f.pad, r(f.lx), r(f.lz), r(f.yaw), r(f.mat.uniforms.uSeedF.value)]),
+      frogs: frogs.filter((f) => !f.dying && f.state !== 'held').map((f) => [f.id, r(f.born, 10), r(f.dev, 10), f.male ? 1 : 0, f.green ? 1 : 0, r(f.size), r(f.maxSize), r(f.energy), r(f.health), r(f.life, 10), r(f.cool, 10), f.pad, r(f.lx), r(f.lz), r(f.yaw), r(f.mat.uniforms.uSeedF.value)]),
       eggs: eggs.map((E) => [r(E.x), r(E.z), r(E.laid, 10), E.list.map((e) => e.map((v) => r(v, 10000)))]),
       algae: Array.from(algae, (v) => Math.round(v * 255)) };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
@@ -7204,11 +7212,886 @@ function lifeTitle() {
   if (nf) bits.push(`アマガエル${kanji(nf)}匹`);
   if (nt) bits.push(`オタマジャクシ${kanji(nt)}匹`);
   if (ne) bits.push(`卵${kanji(ne)}個`);
+  if (heron.st !== 'away') bits.push('アオサギ一羽');
   const s = bits.join('・'); if (el.textContent !== s) el.textContent = s;
 }
 // everything the "カエル" view can follow, frogs and tadpoles together, in the order of their numbers (No.)
 function watchList() {
   return [...frogs.filter((f) => !f.dying).map((f) => ['frog', f]), ...tadpoles.filter((T) => T.st !== 'dead').map((T) => ['tad', T])].sort((a, b) => a[1].id - b[1].id);
+}
+
+// ================================================================= the grey heron (アオサギ)
+// Now and then, by day, a grey heron comes in over the trees, lands on the bank or in the shallows and hunts. It stands
+// tall and looks about, walks slowly with its neck drawn back into an S, freezes, and stabs with its bill. A frog that
+// has noticed it may dive for cover before it comes close, or leap away from the strike itself; tadpoles scatter from
+// the bill; the koi keep away. After a few catches or a couple of minutes — or at once, if a tap startles it — it gives
+// its harsh call and flies off.
+const HER = {
+  TIB: 0.205, TAR: 0.165,                 // the long bare-looking leg bones: tibiotarsus and tarsometatarsus (m)
+  HIP: [0.005, -0.060, 0.036],            // hip joint in the body frame (z mirrored for the other leg)
+  NB: [0.165, 0.050, 0],                  // base of the neck in the body frame
+  BILL: 0.168,                            // from the head joint to the tip of the bill
+  TALL: 0.414, STALK: 0.375, LOW: 0.30,   // height of the body above the feet: standing, stalking, crouched
+};
+// the neck, as offsets [forward, up] from its base in the bird's own upright frame; the bill's pitch goes with each
+const NECKP = {
+  up:    [[0, 0], [0.050, 0.080], [0.046, 0.165], [0.012, 0.245], [0.030, 0.330], [0.072, 0.382]],
+  hunch: [[0, 0], [0.035, 0.050], [0.012, 0.090], [-0.012, 0.120], [0.005, 0.145], [0.040, 0.160]],
+  stalk: [[0, 0], [0.060, 0.060], [0.036, 0.130], [0.050, 0.200], [0.105, 0.226], [0.165, 0.205]],
+  fly:   [[0, 0], [0.040, -0.008], [0.004, -0.028], [-0.026, 0.0], [0.002, 0.030], [0.050, 0.030]],
+};
+const NECK_PITCH = { up: -0.08, hunch: -0.18, stalk: -0.75, fly: 0.0 };
+// the wing (for the +z side), as five points along the leading edge (shoulder, elbow, wrist, outer hand, tip) and the
+// five feather tips behind them: spread for gliding, and folded along the flank with the long primaries over the tail
+const WING = {
+  open: { L: [[0.10, 0.055, 0.06], [0.07, 0.075, 0.30], [0.11, 0.070, 0.53], [0.03, 0.050, 0.71], [-0.07, 0.030, 0.82]],
+          T: [[-0.13, 0.040, 0.06], [-0.21, 0.050, 0.30], [-0.19, 0.045, 0.53], [-0.13, 0.035, 0.71], [-0.08, 0.030, 0.80]] },
+  shut: { L: [[0.11, 0.050, 0.068], [0.085, 0.056, 0.080], [0.055, 0.058, 0.086], [-0.10, 0.045, 0.084], [-0.29, 0.005, 0.052]],
+          T: [[0.06, -0.012, 0.070], [0.00, -0.026, 0.080], [-0.05, -0.030, 0.086], [-0.17, -0.016, 0.078], [-0.30, 0.000, 0.050]] },
+};
+
+// ---------------------------------------------------------------- the model: one mesh, posed in the vertex shader
+// Rigid parts (body and tail, head, lower bill) carry their own positions; the neck, legs, toes and wings are grids of
+// parameters that the shader lays along curves and bones computed each frame on the CPU.
+function buildHeronGeo() {
+  const P = [], A = [], I = [], seams = [];
+  const v = (x, y, z, part, a = 0, b = 0, c = 0) => { P.push(x, y, z); A.push(part, a, b, c); };
+  const grid = (o, nu, nv) => { for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) { const a = o + i * (nv + 1) + j, b = a + nv + 1; I.push(a, b, a + 1, a + 1, b, b + 1); } };
+  // a closed shape round the x axis; prof(u) -> [x, centre y, half height above, half height below, half width]
+  const lathe = (part, sub, nu, nv, prof) => {
+    const o = P.length / 3;
+    for (let i = 0; i <= nu; i++) {
+      const u = i / nu, [x, cy, ra, rb, rz] = prof(u);
+      for (let j = 0; j <= nv; j++) { const a = j / nv * TAU, s = Math.sin(a), c = Math.cos(a); v(x, cy + s * (s > 0 ? ra : rb), c * rz, part, sub, u); }
+    }
+    grid(o, nu, nv); seams.push([o, nu, nv]);
+  };
+  const env = (u, p) => Math.pow(Math.max(Math.sin(Math.PI * u), 0), p);
+  // body: tail end at x = -0.20, breast at +0.215; flat backed, deep chested
+  lathe(0, 0, 28, 18, (u) => { const x = -0.20 + u * 0.415, e = env(u, 0.5); return [x, 0.012 + 0.022 * u, 0.070 * e * (1 - 0.12 * u), 0.088 * e * (0.86 + 0.24 * Math.sin(Math.PI * Math.min(u * 1.15, 1))), 0.072 * e]; });
+  // tail
+  lathe(0, 1, 10, 12, (u) => { const x = -0.315 + u * 0.15, e = env(u, 0.45); return [x, -0.012 + 0.024 * u, 0.012 * e, 0.008 * e, 0.040 * e * (0.75 + 0.25 * u)]; });
+  // head (part 1): skull (sub 0), upper bill (1), eyes (2), plumes (3); the head joint is the origin, x along the bill
+  lathe(1, 0, 16, 14, (u) => { const x = -0.028 + u * 0.072, e = env(u, 0.62); return [x, 0.004 + 0.004 * u, 0.0175 * e * (1 - 0.15 * u), 0.0145 * e, 0.0148 * e]; });
+  lathe(1, 1, 18, 10, (u) => { const x = 0.030 + u * 0.138, k = Math.pow(1 - u, 0.85); return [x, -0.0015 - 0.004 * u * u, 0.0105 * k + 0.0004, 0.0007, 0.0085 * k + 0.0003]; });
+  // lower bill (part 2), hinged at the gape
+  lathe(2, 0, 18, 10, (u) => { const x = 0.030 + u * 0.130, k = Math.pow(1 - u, 0.8); return [x, -0.0022 - 0.004 * u * u, 0.0006, 0.0085 * k + 0.0003, 0.0078 * k + 0.0003]; });
+  for (const sd of [1, -1]) {
+    const o = P.length / 3, ex = 0.026, ey = 0.0105, ez = 0.0128 * sd, r = 0.0046;
+    for (let i = 0; i <= 6; i++) for (let j = 0; j <= 8; j++) { const th = i / 6 * Math.PI, ph = j / 8 * TAU; v(ex + Math.sin(th) * Math.cos(ph) * r, ey + Math.cos(th) * r, ez + Math.sin(th) * Math.sin(ph) * r, 1, 2, sd, 0); }
+    grid(o, 6, 8);
+    // two long black plumes from the back of the crown
+    for (let k = 0; k < 2; k++) {
+      const o2 = P.length / 3, NS = 10, NA = 5;
+      for (let i = 0; i <= NS; i++) {
+        const s = i / NS, x = -0.018 - s * (0.11 + 0.02 * k), y = 0.016 - 0.035 * s * s - 0.004 * k, z = sd * (0.003 + 0.006 * s + 0.002 * k), rr2 = 0.0024 * (1 - s) + 0.0005;
+        for (let j = 0; j <= NA; j++) { const a = j / NA * TAU; v(x, y + Math.sin(a) * rr2, z + Math.cos(a) * rr2, 1, 3, k + (sd > 0 ? 0 : 2), s); }
+      }
+      grid(o2, NS, NA);
+    }
+  }
+  // neck (part 3): along s, round by angle
+  { const NS = 30, NA = 12, o = P.length / 3; for (let i = 0; i <= NS; i++) for (let j = 0; j <= NA; j++) v(i / NS, j / NA * TAU, 0, 3); grid(o, NS, NA); }
+  // legs (part 4): tibiotarsus, tarsometatarsus and four toes on each
+  for (let leg = 0; leg < 2; leg++) for (let seg = 0; seg < 6; seg++) {
+    const NS = seg < 2 ? 8 : 4, NA = seg < 2 ? 8 : 5, o = P.length / 3;
+    for (let i = 0; i <= NS; i++) for (let j = 0; j <= NA; j++) v(seg, i / NS, j / NA * TAU, 4, leg);
+    grid(o, NS, NA);
+  }
+  // wings (part 5): along the span s, across the chord t
+  for (const sd of [1, -1]) { const NS = 24, NT = 9, o = P.length / 3; for (let i = 0; i <= NS; i++) for (let j = 0; j <= NT; j++) v(i / NS, j / NT, 0, 5, sd); grid(o, NS, NT); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.setAttribute('aP', new THREE.Float32BufferAttribute(A, 4));
+  g.setIndex(I); g.computeVertexNormals();
+  // the lathes' seams and poles: share the normals across them
+  const N = g.attributes.normal;
+  for (const [o, nu, nv] of seams) {
+    for (let i = 0; i <= nu; i++) {
+      const a = o + i * (nv + 1), b = a + nv;
+      const x = N.getX(a) + N.getX(b), y = N.getY(a) + N.getY(b), z = N.getZ(a) + N.getZ(b), l = Math.hypot(x, y, z) || 1;
+      N.setXYZ(a, x / l, y / l, z / l); N.setXYZ(b, x / l, y / l, z / l);
+    }
+    for (const i of [0, nu]) { const sgn = i === 0 ? -1 : 1; for (let j = 0; j <= nv; j++) N.setXYZ(o + i * (nv + 1) + j, sgn, 0, 0); }
+  }
+  return g;
+}
+const HER_VS = /* glsl */`
+${GL_COMMON}
+attribute vec4 aP;
+uniform mat4 uHB; uniform mat4 uHH; uniform mat4 uHJ;
+uniform vec3 uNk[6]; uniform vec3 uNkS[2]; uniform vec4 uBulge;
+uniform vec3 uLg[6]; uniform vec3 uToe[8];
+uniform vec3 uWL[10]; uniform vec3 uWT[10];
+uniform float uHerT;
+varying vec3 vW; varying vec3 vN; varying vec4 vP; varying vec3 vL;
+vec3 crP(vec3 p0, vec3 p1, vec3 p2, vec3 p3, float u){ float u2 = u * u, u3 = u2 * u; return 0.5 * (2.0 * p1 + (p2 - p0) * u + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u2 + (3.0 * p1 - p0 - 3.0 * p2 + p3) * u3); }
+vec3 crD(vec3 p0, vec3 p1, vec3 p2, vec3 p3, float u){ return 0.5 * ((p2 - p0) + 2.0 * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u + 3.0 * (3.0 * p1 - p0 - 3.0 * p2 + p3) * u * u); }
+void neckAt(float s, out vec3 P, out vec3 T){
+  float x = clamp(s, 0.0, 1.0) * 5.0; int i = int(min(floor(x), 4.0)); float u = x - float(i);
+  vec3 p1 = uNk[i], p2 = uNk[i + 1], q0 = uNk[max(i - 1, 0)], q3 = uNk[min(i + 2, 5)];
+  vec3 p0 = i > 0 ? q0 : 2.0 * p1 - p2, p3 = i < 4 ? q3 : 2.0 * p2 - p1;
+  P = crP(p0, p1, p2, p3, u); T = normalize(crD(p0, p1, p2, p3, u) + vec3(0.0, 1e-5, 0.0));
+}
+void edgeAt(int o, bool lead, float s, out vec3 P, out vec3 D){
+  float x = clamp(s, 0.0, 1.0) * 4.0; int i = int(min(floor(x), 3.0)); float u = x - float(i);
+  vec3 p1, p2, q0, q3;
+  if (lead) { p1 = uWL[o + i]; p2 = uWL[o + i + 1]; q0 = uWL[o + max(i - 1, 0)]; q3 = uWL[o + min(i + 2, 4)]; }
+  else { p1 = uWT[o + i]; p2 = uWT[o + i + 1]; q0 = uWT[o + max(i - 1, 0)]; q3 = uWT[o + min(i + 2, 4)]; }
+  vec3 p0 = i > 0 ? q0 : 2.0 * p1 - p2, p3 = i < 3 ? q3 : 2.0 * p2 - p1;
+  P = crP(p0, p1, p2, p3, u); D = crD(p0, p1, p2, p3, u) * 4.0;
+}
+// a round tube along a straight bone
+vec3 tube(vec3 A, vec3 B, float r, float s, float a, vec3 side, out vec3 n){
+  vec3 T = normalize(B - A + vec3(0.0, 1e-6, 0.0)), N = normalize(cross(T, side) + vec3(1e-5, 0.0, 0.0)), Bn = cross(N, T);
+  n = cos(a) * N + sin(a) * Bn; return mix(A, B, s) + n * r;
+}
+void main(){
+  float part = aP.x; vec3 w = position, n = normal; vL = position; vP = aP;
+  if (part < 0.5) { w = (uHB * vec4(position, 1.0)).xyz; n = mat3(uHB) * normal; }
+  else if (part < 1.5) {
+    vec3 p = position;
+    if (aP.y > 2.5) { float s = aP.w; p.y += sin(uHerT * 2.1 + aP.z * 1.9) * 0.005 * s * s; p.z += sin(uHerT * 1.6 + aP.z * 2.3) * 0.004 * s * s; }
+    w = (uHH * vec4(p, 1.0)).xyz; n = mat3(uHH) * normal;
+  } else if (part < 2.5) { w = (uHJ * vec4(position, 1.0)).xyz; n = mat3(uHJ) * normal; }
+  else if (part < 3.5) {
+    float s = position.x, a = position.y; vec3 P, T; neckAt(s, P, T);
+    vec3 S = normalize(mix(uNkS[0], uNkS[1], smoothstep(0.2, 1.0, s)));
+    vec3 Nf = normalize(cross(T, S)), Bn = cross(Nf, T);
+    float r = mix(0.039, 0.0195, smoothstep(0.0, 0.5, s)) * (1.0 - 0.08 * smoothstep(0.8, 1.0, s));
+    float front = max(cos(a), 0.0);
+    r *= 1.0 + 0.5 * front * front * (1.0 - smoothstep(0.05, 0.42, s));      // the long plumes hanging from the lower neck
+    r += uBulge.y * exp(-pow((s - uBulge.x) / 0.07, 2.0));                   // a meal on its way down
+    n = cos(a) * Nf + sin(a) * Bn; w = P + n * r; vL = vec3(s, a, r);
+  } else if (part < 4.5) {
+    int leg = int(aP.y + 0.5); float seg = position.x, s = position.y, a = position.z;
+    vec3 H = uLg[leg * 3], K = uLg[leg * 3 + 1], F = uLg[leg * 3 + 2];
+    vec3 side = normalize(mat3(uHB) * vec3(0.0, 0.0, 1.0));
+    if (seg < 0.5) w = tube(H, K, mix(0.0165, 0.0072, smoothstep(0.0, 0.5, s)), s, a, side, n);
+    else if (seg < 1.5) w = tube(K, F, mix(0.0068, 0.0056, s), s, a, side, n);
+    else { int k = int(seg - 2.0 + 0.5); w = tube(F, uToe[leg * 4 + k], mix(0.0042, 0.0016, s), s, a, vec3(0.0, 1.0, 0.0), n); }
+    vL = vec3(seg, s, a);
+  } else {
+    int o = aP.y > 0.0 ? 0 : 5; float s = position.x, t = position.y;
+    vec3 L0, dL, T0, dT; edgeAt(o, true, s, L0, dL); edgeAt(o, false, s, T0, dT);
+    vec3 P = mix(L0, T0, t), dPs = mix(dL, dT, t), dPt = T0 - L0;
+    vec3 U = normalize(cross(dPt, dPs) + vec3(0.0, 1e-7, 0.0)) * aP.y;
+    P += U * 0.016 * 4.0 * t * (1.0 - t) * (1.0 - 0.7 * s);                    // the arch of the wing
+    w = P; n = U; vL = vec3(s, t, aP.y);
+  }
+  vW = w; vN = normalize(n);
+  vec3 wp = IS_REFR && w.y < 0.0 ? apparentPos(w) : w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+}`;
+const HER_FS = /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+${GL_UNDER}
+uniform float uWaterL; uniform float uWOpen;
+varying vec3 vW; varying vec3 vN; varying vec4 vP; varying vec3 vL;
+void main(){
+  float part = vP.x;
+  vec3 GREY = vec3(0.150, 0.158, 0.175), DARK = vec3(0.024, 0.024, 0.028), WHITE = vec3(0.66, 0.66, 0.64), PALE = vec3(0.40, 0.41, 0.43);
+  // the flight feathers: the long primaries end in separate "fingers", the secondaries in a softly scalloped edge
+  if (part > 4.5) {
+    float s = vL.x, t = vL.y;
+    if (s > 0.74 && uWOpen > 0.6) { float k = (s - 0.74) / 0.26 * 6.0, g = fract(k); if (t > 0.58 + 0.08 * (k / 6.0) && (g < 0.14 || g > 0.92)) discard; }
+    else if (t > 0.97 - 0.05 * abs(sin(3.14159 * s * (s > 0.74 ? 26.0 : 14.0)))) discard;
+  }
+  if (IS_REFR) { if (vW.y > uWaterL + 0.002) discard; }
+  else if (vW.y < uWaterL - 0.003) discard;
+  if (IS_SHADOW) { gl_FragColor = vec4(1.0); return; }
+  vec3 N = normalize(vN), V = normalize(cameraPosition - vW);
+  bool thin = part > 4.5 || (part > 0.5 && part < 1.5 && vP.y > 2.5);
+  bool under = false;
+  if (thin && dot(N, V) < 0.0) { N = -N; under = true; }
+  float grain = vnoise3(vW * 180.0) * 0.6 + vnoise3(vW * 520.0) * 0.4;
+  vec3 alb = GREY; float gloss = 0.0;
+  if (part < 0.5) {
+    vec3 q = vL;
+    if (vP.y > 0.5) alb = mix(GREY * 0.8, WHITE * 0.85, smoothstep(-0.002, -0.010, q.y - mix(-0.012, 0.012, vP.z)));
+    else {
+      float bel = smoothstep(0.004, -0.04, q.y - 0.12 * q.x);
+      alb = mix(GREY, WHITE, bel);
+      // the black band low on the flank, from the bend of the wing back
+      float sideK = abs(q.z) / 0.072;
+      float stripe = smoothstep(0.6, 0.85, sideK) * (1.0 - smoothstep(0.012, 0.03, abs(q.y + 0.012 - 0.15 * q.x))) * smoothstep(-0.14, -0.06, q.x) * smoothstep(0.17, 0.11, q.x);
+      alb = mix(alb, DARK, stripe);
+      alb = mix(alb, WHITE, smoothstep(0.12, 0.19, q.x) * (1.0 - stripe));
+    }
+    alb *= 0.9 + 0.2 * grain;
+  } else if (part < 1.5) {
+    vec3 q = vL; float sub = vP.y;
+    if (sub < 0.5) {
+      alb = WHITE;
+      float az = abs(q.z);
+      // the black stripe from just above the eye, broadening back to the nape (the crown between them stays white)
+      float u = clamp((0.027 - q.x) / 0.055, 0.0, 1.0);
+      float cy = mix(0.0135, 0.0105, u), hw = mix(0.0022, 0.0062, u);
+      float st = (1.0 - smoothstep(hw, hw + 0.0015, abs(q.y - cy))) * smoothstep(0.0045, 0.0075, az) * smoothstep(0.031, 0.025, q.x);
+      alb = mix(alb, DARK, st);
+      // the bare skin between the eye and the bill
+      float lore = smoothstep(0.026, 0.034, q.x) * (1.0 - smoothstep(0.004, 0.011, abs(q.y - 0.006))) * smoothstep(0.006, 0.010, az);
+      alb = mix(alb, vec3(0.42, 0.40, 0.10), lore * 0.8);
+      alb *= 0.92 + 0.12 * grain;
+    } else if (sub < 1.5) { alb = mix(vec3(0.60, 0.38, 0.05), vec3(0.42, 0.30, 0.08), smoothstep(0.006, 0.010, q.y + 0.003)); gloss = 0.5; }
+    else if (sub < 2.5) {
+      vec3 e = normalize(q - vec3(0.026, 0.0105, 0.0128 * vP.z));
+      float c = abs(e.z);
+      alb = c > 0.92 ? vec3(0.01) : c > 0.62 ? vec3(0.78, 0.60, 0.07) : WHITE * 0.85;
+      gloss = 1.0;
+    } else alb = DARK;
+  } else if (part < 2.5) { alb = vec3(0.64, 0.44, 0.07); gloss = 0.4; }
+  else if (part < 3.5) {
+    float s = vL.x, a = vL.y, aw = a > 3.14159 ? a - 6.28318 : a;
+    alb = mix(WHITE, PALE, smoothstep(0.2, -0.8, cos(a)));                   // whiter in front, greyer behind
+    // two rows of black streaks down the front of the neck
+    float row = 1.0 - smoothstep(0.07, 0.15, abs(abs(aw) - 0.26));
+    float dash = smoothstep(0.42, 0.55, vnoise(vec2(s * 46.0, aw * 3.0 + 7.0)));
+    alb = mix(alb, DARK, row * dash * smoothstep(0.08, 0.16, s) * (1.0 - smoothstep(0.78, 0.88, s)));
+    alb *= 0.92 + 0.14 * grain;
+  } else if (part < 4.5) {
+    float seg = vL.x, s = vL.y;
+    vec3 skin = vec3(0.34, 0.25, 0.10);
+    alb = seg < 0.5 ? mix(PALE, skin, smoothstep(0.28, 0.36, s)) : skin * (0.85 + 0.25 * vnoise(vec2(s * 60.0, vL.z * 3.0)));
+    gloss = seg < 0.5 && s < 0.32 ? 0.0 : 0.2;
+  } else {
+    float s = vL.x, t = vL.y;
+    if (!under) {
+      float flight = s > 0.5 ? smoothstep(0.22, 0.34, t) : smoothstep(0.50, 0.62, t);
+      alb = mix(GREY * 1.1, DARK, flight);
+      alb = mix(alb, WHITE, (1.0 - smoothstep(0.06, 0.14, t)) * smoothstep(0.38, 0.45, s) * (1.0 - smoothstep(0.55, 0.62, s)));
+    } else {
+      float flight = s > 0.5 ? smoothstep(0.25, 0.40, t) : smoothstep(0.50, 0.65, t);
+      alb = mix(GREY * 1.5, vec3(0.08, 0.08, 0.09), flight);
+    }
+    // the separate feathers: a faint darker line between each one
+    float fe = s > 0.5 ? fract((s - 0.5) * 18.0) : fract(s * 22.0);
+    alb *= (0.88 + 0.12 * smoothstep(0.0, 0.15, fe)) * (0.92 + 0.12 * grain);
+  }
+  vec3 col;
+  if (IS_REFR) { vec3 sp; vec3 L = underLight(vW, N, 1.0, -1, sp); col = viewThroughWater(alb * L, vW); }
+  else {
+    float sh = sunShadow(vW, N), ndl = sat(dot(N, uSunDir));
+    vec3 sky = mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y);
+    col = alb * (uSunCol * ndl * sh + sky * (thin ? 0.5 + 0.12 * abs(N.y) : 0.42 + 0.22 * N.y));
+    if (thin) col += alb * uSunCol * sat(dot(-N, uSunDir)) * 0.32 * sh;        // sunlight through the feathers
+    col += sky * 0.05 * pow(1.0 - sat(dot(N, V)), 3.0);                         // a soft sheen at the outline
+    if (gloss > 0.0) { vec3 Hh = normalize(uSunDir + V); col += uSunCol * ggx(max(dot(N, Hh), 0.0), 0.12) * 0.04 * gloss * sh * ndl; }
+    col += lampLight(vW, N) * alb;
+    col = fogLand(col, vW);
+  }
+  gl_FragColor = vec4(col, 1.0);
+}`;
+const HU = {
+  uHB: { value: new THREE.Matrix4() }, uHH: { value: new THREE.Matrix4() }, uHJ: { value: new THREE.Matrix4() },
+  uNk: { value: Array.from({ length: 6 }, () => V3()) }, uNkS: { value: [V3(0, 0, 1), V3(0, 0, 1)] }, uBulge: { value: new THREE.Vector4() },
+  uLg: { value: Array.from({ length: 6 }, () => V3()) }, uToe: { value: Array.from({ length: 8 }, () => V3()) },
+  uWL: { value: Array.from({ length: 10 }, () => V3()) }, uWT: { value: Array.from({ length: 10 }, () => V3()) },
+  uWaterL: { value: 0 }, uHerT: { value: 0 }, uWOpen: { value: 0 },
+};
+const herMesh = new THREE.Mesh(buildHeronGeo(), smat(HER_VS, HER_FS, HU, { side: THREE.DoubleSide }));
+herMesh.frustumCulled = false; herMesh.visible = false;
+onLayers(herMesh, LAYER.MAIN, LAYER.REFL, LAYER.REFR, LAYER.SHADOW); scene.add(herMesh);
+
+// ---------------------------------------------------------------- state
+const heron = {
+  st: 'away', t: 0, next: 0, visitT: 0, stay: 0,
+  x: 0, z: 0, gy: 0, yaw: 0, pitch: 0.4, roll: 0, hipH: HER.TALL, bob: 0,
+  bx: 0, by: 0, bz: 0,                                         // the body (in flight it follows the path)
+  feet: [0, 1].map(() => ({ x: 0, y: 0, z: 0, sx: 0, sy: 0, sz: 0, tx: 0, ty: 0, tz: 0, u: 1, dur: 0.6, lift: 0.05, wet: false })),
+  neck: NECKP.up.map(([f, u]) => [f, u, 0]), pose: 'up', poseK: 3,
+  hy: 0, hp: -0.08, hyGoal: 0, hpGoal: -0.08, hK: 4,
+  jaw: 0, open: 0, flap: 0.1, flex: 0.15, sweep: 0, beatPh: 0, beatHz: 2, beat: 0, glide: 0,
+  path: null, u: 0, v: 0, legsDown: 0,
+  prey: null, kind: null, aimT: 0, sT: 0, sP: null, sDir: null, caught: null, catches: 0, maxCatch: 2, eatT: 0, idleT: 0, goal: null, walkV: 0.07,
+  lookT: 0, bulge: 0, bulgeS: 1, wetT: 0, inWater: false, threat: null, lastCall: -99, hops: 0, hopTo: null,
+  n: { alert: 0, escape: 0, strike: 0, catch: 0, evade: 0, hop: 0 },
+};
+heron.next = 160 + 140 * Math.random();
+const HB = new THREE.Matrix4(), HH = new THREE.Matrix4(), _hm = new THREE.Matrix4(), _hm2h = new THREE.Matrix4(), _hm3h = new THREE.Matrix4(), _hv = V3(), _hv2 = V3(), herBill = V3(), herNeckB = V3();
+const herFwd = () => [Math.cos(heron.yaw), Math.sin(heron.yaw)];
+// may it stand here? on the bank close to the water or wading in the shallows, clear of leaves, stones and plants
+function herCanStand(x, z) {
+  const sd = pondSDF(x, z); if (sd > 0.14) return false;
+  if (terrainH(x, z) < -0.22) return false;                                // wading, up to its belly
+  for (const q of floaters) if (Math.hypot(q.x - x, q.z - z) < q.r + 0.035) return false;
+  for (const p of pads) if (p.lotus && Math.hypot(p.x - x, p.z - z) < p.r + 0.12) return false;
+  for (const r of CAM_ROCKS) if (Math.hypot(r[0] - x, r[1] - z) < r[2] + 0.09) return false;
+  if (Math.hypot(LANT.x - x, LANT.z - z) < 0.55) return false;
+  for (const p of TYPHA) if (Math.hypot(p.x - x, p.z - z) < 0.4) return false;
+  for (const p of SUSUKI) if (Math.hypot(p.x - x, p.z - z) < 0.45) return false;
+  for (const p of [...HIGAN, ...TSUWA, ...FERNS, ...SAZANKA]) if (Math.hypot(p.x - x, p.z - z) < 0.35) return false;
+  return true;
+}
+function herGround(x, z) { return terrainH(x, z) + 0.004; }
+// can it be seen from the usual view over the pond, or is it hidden under a tree or the willow?
+function herInView(x, z) {
+  if (Math.hypot(x - WILLOW.x, z - WILLOW.z) < 1.7) return false;
+  const V = framing().portrait ? [4.9, 7.9, -0.1] : [0.85, 8.3, 5.15];      // where the camera sits in the pond view
+  const y = terrainH(x, z) + 0.55, dx = V[0] - x, dy = V[1] - y, dz = V[2] - z, L = Math.hypot(dx, dy, dz);
+  for (const c of canopy) {
+    const ox = c.c[0] - x, oy = c.c[1] - y, oz = c.c[2] - z, t = (ox * dx + oy * dy + oz * dz) / L;
+    if (t < 0) continue;
+    const px = ox - dx / L * t, py = oy - dy / L * t, pz = oz - dz / L * t;
+    if (px * px + py * py + pz * pz < (c.r * 0.75) ** 2) return false;
+  }
+  return true;
+}
+// somewhere to land: a good standing spot, best with frogs or tadpoles within reach
+function herSpot() {
+  let best = null, bs = -1e9;
+  for (let k = 0; k < 120; k++) {
+    const p = polarAt(lr(0, TAU), lr(-0.26, 0.1));
+    if (!herCanStand(p.x, p.z) || !herInView(p.x, p.z)) continue;
+    let sc = lr(0, 1.0) + (pondSDF(p.x, p.z) < -0.04 ? 0.4 : 0);
+    for (const f of frogs) if (!f.dying && f.state === 'sit') { const d = Math.hypot(f.pos.x - p.x, f.pos.z - p.z); if (d < 0.9) sc += 2.0 * (0.9 - d); }
+    let nt = 0; for (const T of tadpoles) if (T.st === 'swim' && T.y > -0.21 && Math.hypot(T.x - p.x, T.z - p.z) < 0.8) nt++;
+    sc += Math.min(nt, 8) * 0.25;
+    if (sc > bs) { bs = sc; best = [p.x, p.z]; }
+  }
+  return best;
+}
+// a gentle curve through the air
+function herPath(p0, p1, p2, p3) { return { p: [p0, p1, p2, p3] }; }
+function bez(P, u, out) {
+  const a = (1 - u) * (1 - u) * (1 - u), b = 3 * u * (1 - u) * (1 - u), c = 3 * u * u * (1 - u), d = u * u * u;
+  out[0] = a * P[0][0] + b * P[1][0] + c * P[2][0] + d * P[3][0]; out[1] = a * P[0][1] + b * P[1][1] + c * P[2][1] + d * P[3][1]; out[2] = a * P[0][2] + b * P[1][2] + c * P[2][2] + d * P[3][2];
+  return out;
+}
+function bezD(P, u, out) {
+  const a = 3 * (1 - u) * (1 - u), b = 6 * u * (1 - u), c = 3 * u * u;
+  for (let k = 0; k < 3; k++) out[k] = a * (P[1][k] - P[0][k]) + b * (P[2][k] - P[1][k]) + c * (P[3][k] - P[2][k]);
+  return out;
+}
+const _b0 = [0, 0, 0], _b1 = [0, 0, 0];
+// it arrives from far away over the trees and glides down to the spot
+function herVisit() {
+  const s = herSpot(); if (!s) { heron.next = 30; return; }
+  const h = heron, [x, z] = s, gy = herGround(x, z);
+  // come in from the side with the most open sky, roughly towards the pond's middle
+  const toC = Math.atan2(-0.25 - z, 0.85 - x), a = toC + Math.PI + lr(-0.9, 0.9), R = 11;
+  const sx = 0.85 + Math.cos(a) * R, sz = -0.25 + Math.sin(a) * R;
+  const dx = x - sx, dz = z - sz, dl = Math.hypot(dx, dz), ux = dx / dl, uz = dz / dl;
+  h.path = herPath([sx, 5.2, sz], [sx + ux * 3, 4.4, sz + uz * 3], [x - ux * 1.6, gy + HER.TALL + 0.7, z - uz * 1.6], [x, gy + HER.TALL, z]);
+  h.u = 0; h.v = 3.4; h.st = 'in'; h.t = 0; h.visitT = 0; h.x = x; h.z = z; h.gy = gy; h.yaw = Math.atan2(uz, ux); h.hop = false;
+  h.stay = lr(80, 150); h.catches = 0; h.maxCatch = lifeRand() < 0.5 ? 2 : 3; h.idleT = 0; h.prey = null; h.caught = null; h.hops = 0; h.hopTo = null;
+  h.open = 1; h.beatPh = 0; h.legsDown = 0; h.pose = 'fly'; h.neck = NECKP.fly.map(([f, u]) => [f, u, 0]);
+  for (const f of frogs) f.herAlert = false;
+}
+function heronGone() {
+  const h = heron;
+  // flown off with a frog still in its bill
+  if (h.caught && h.caught.state === 'held' && frogs.includes(h.caught)) { const f = h.caught; if (focus && focus.ref === f) focusNote('アオサギに連れ去られた'); removeFrog(f); lifeStats.heron++; }
+  h.caught = null; h.prey = null; h.st = 'away'; h.next = lr(360, 720); h.threat = null; h.inWater = false;
+  herMesh.visible = false;
+  for (const f of frogs) f.herAlert = false;
+}
+// startled (a tap close by, or night falling): it calls and flies off
+function herStartle() {
+  const h = heron;
+  if (h.st === 'away' || h.st === 'in' || h.st === 'out' || h.st === 'takeoff') return false;
+  h.st = 'takeoff'; h.t = 0; herCall();
+  return true;
+}
+function herCall() { const h = heron, now = G.uTime.value; if (now - h.lastCall < 3) return; h.lastCall = now; SFX.herCall(herBill.x, herBill.y, herBill.z); h.jawCall = 0.5; }
+// the frog's way out: off its leaf on the far side from the heron and away under the water to a distant leaf
+function herEscapePlan(f, hx, hz, any = false) {
+  const cur = pads[f.pad]; if (!cur) return null;
+  let best = null, bs = -1e9;
+  const d0 = Math.hypot(cur.x - hx, cur.z - hz);
+  for (let i = 0; i < NPAD; i++) {
+    if (i === f.pad || padTaken(i, f)) continue;
+    const p = pads[i]; if (p.r < padMinR(f, 0.085) || p.age > 0.85) continue;
+    const d = Math.hypot(p.x - cur.x, p.z - cur.z); if (d < 0.35 || d > 2.6) continue;
+    const dh = Math.hypot(p.x - hx, p.z - hz); if (!any && dh < d0 + 0.4) continue;
+    const appA = padApproach(i, cur.x, cur.z); if (appA === null) continue;
+    const sc = dh - d * 0.4 + lr(0, 0.3);
+    if (sc > bs) { bs = sc; best = { to: i, appA }; }
+  }
+  if (!best) return null;
+  const a0 = Math.atan2(cur.z - hz, cur.x - hx);
+  let ex = cur.x + Math.cos(a0) * (cur.r + 0.12), ez = cur.z + Math.sin(a0) * (cur.r + 0.12);
+  search: for (const dd of [0.12, 0.2]) for (const o of [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2]) {
+    const x = cur.x + Math.cos(a0 + o) * (cur.r + dd), z = cur.z + Math.sin(a0 + o) * (cur.r + dd);
+    if (pondSDF(x, z) < -0.12 && padAt(x, z, -1, 0.05) < 0) { ex = x; ez = z; break search; }
+  }
+  return { to: best.to, appA: best.appA, ex, ez };
+}
+function herFrogEscape(f, now) {
+  if (!(f.state === 'sit' || f.state === 'land' || (f.state === 'crouch' && !f.diving)) || f.tongue) return false;
+  const plan = herEscapePlan(f, heron.x, heron.z); if (!plan) return false;
+  if (f.prey) { f.prey.hunter = null; f.prey = null; } f.hunt = null; f.swallow = 0;
+  f.state = 'crouch'; f.t = now ? 0.34 : 0.12; f.jumpTo = plan.to; f.diving = true; f.swimPlan = plan;
+  if (focus && focus.ref === f) focusNote('アオサギに気づいて水へ逃げた');
+  return true;
+}
+
+// ---------------------------------------------------------------- moving about on its feet
+function herFootHome(i, x, z, yaw) {
+  const sd = i === 0 ? 1 : -1, c = Math.cos(yaw), s = Math.sin(yaw);
+  return [x - s * 0.045 * sd + c * 0.01 * sd, z + c * 0.045 * sd + s * 0.01 * sd];
+}
+function herPlantFeet() {
+  const h = heron;
+  for (let i = 0; i < 2; i++) { const F = h.feet[i], [fx, fz] = herFootHome(i, h.x, h.z, h.yaw); F.x = F.tx = F.sx = fx; F.z = F.tz = F.sz = fz; F.y = F.ty = F.sy = herGround(fx, fz); F.u = 1; F.wet = pondSDF(fx, fz) < -0.02; }
+}
+// one step at a time: a foot that has fallen behind (or out of place) lifts out of the water and is set down again
+function herFeet(dt, moving) {
+  const h = heron, [c, s] = herFwd();
+  for (let i = 0; i < 2; i++) {
+    const F = h.feet[i];
+    if (F.u < 1) {
+      F.u = Math.min(1, F.u + dt / F.dur);
+      const e = smooth(0, 1, F.u);
+      F.x = lerp(F.sx, F.tx, e); F.z = lerp(F.sz, F.tz, e); F.y = lerp(F.sy, F.ty, e) + Math.sin(Math.PI * F.u) * F.lift;
+      if (F.u >= 1) {
+        F.y = F.ty;
+        const wet = pondSDF(F.x, F.z) < -0.02; F.wet = wet;
+        if (wet) { addDrop(F.x, F.z, 0.035, -0.0010); splash(F.x, 0.004, F.z, 3, 0.18, 0.0018); }
+        SFX.herStep(F.x, F.z, wet); strDisturb(F.x, F.z, 0.25, 0.5);
+      }
+      continue;
+    }
+    const other = h.feet[1 - i]; if (other.u < 1) continue;
+    const [hx, hz] = herFootHome(i, h.x, h.z, h.yaw);
+    const lead = moving ? h.walkV * 0.42 : 0;
+    const d = Math.hypot(F.x - hx - c * lead, F.z - hz - s * lead);
+    if (d > (moving ? 0.05 : 0.035)) {
+      F.sx = F.x; F.sy = F.y; F.sz = F.z;
+      F.tx = hx + c * lead * 2; F.tz = hz + s * lead * 2;
+      if (!moving) { F.tx = hx; F.tz = hz; }
+      F.ty = herGround(F.tx, F.tz); F.u = 0; F.dur = moving ? lr(0.55, 0.75) * (0.07 / Math.max(h.walkV, 0.04)) ** 0.3 : 0.5; F.lift = moving ? lr(0.05, 0.075) : 0.04;
+      if (F.wet) { addDrop(F.x, F.z, 0.03, 0.0008); }
+    }
+  }
+}
+// walk the spot between its feet towards a goal; returns the distance left, or -1 if the way is blocked
+function herWalk(dt, gx, gz, face) {
+  const h = heron, dx = gx - h.x, dz = gz - h.z, d = Math.hypot(dx, dz);
+  const want = face !== undefined ? face : Math.atan2(dz, dx);
+  h.yaw += clamp(wrapAngle(want - h.yaw), -dt * 1.4, dt * 1.4);
+  if (d > 0.005 && Math.abs(wrapAngle(Math.atan2(dz, dx) - h.yaw)) < 1.4) {
+    const st = Math.min(d, h.walkV * dt), nx = h.x + dx / d * st, nz = h.z + dz / d * st;
+    if (herCanStand(nx, nz) || !herCanStand(h.x, h.z)) { h.x = nx; h.z = nz; } else { herFeet(dt, false); return -1; }
+  }
+  herFeet(dt, d > 0.01);
+  return d;
+}
+
+// ---------------------------------------------------------------- hunting
+// the best thing to go for: a frog sitting on a leaf, or a tadpole in water shallow enough to reach
+// (only ones it can find somewhere to stand within striking distance of)
+function herPickPrey() {
+  const h = heron, cands = [];
+  for (const f of frogs) {
+    if (f.dying || (f.state !== 'sit' && f.state !== 'land')) continue;
+    const p = pads[f.pad]; if (p && p.lotus && p.y > 0.12) continue;
+    const d = Math.hypot(f.pos.x - h.x, f.pos.z - h.z); if (d > 2.2) continue;
+    cands.push([2.6 - d + (f.herAlert ? -0.4 : 0) + 0.3 * f.size + lr(0, 0.3), 'frog', f]);
+  }
+  for (const T of tadpoles) {
+    if (T.st !== 'swim' || T.y < -0.21) continue;
+    const d = Math.hypot(T.x - h.x, T.z - h.z); if (d > 1.5) continue;
+    cands.push([1.5 - d + lr(0, 0.3), 'tad', T]);
+  }
+  cands.sort((a, b) => b[0] - a[0]);
+  for (let i = 0; i < Math.min(cands.length, 8); i++) {
+    const [, kind, o] = cands[i], [px, , pz] = herPreyPos(kind, o), d = Math.hypot(px - h.x, pz - h.z);
+    if (d < 0.56 && d > 0.24) return [kind, o, null];
+    const st = herStance(px, pz); if (st) return [kind, o, st];
+  }
+  return null;
+}
+const herPreyPos = (kind, o) => kind === 'frog' ? [o.pos.x, o.pos.y + 0.015 * FROG_SCALE * o.size, o.pos.z] : [o.x, o.y, o.z];
+const herPreyOK = (kind, o) => kind === 'frog' ? frogs.includes(o) && !o.dying && (o.state === 'sit' || o.state === 'land' || (o.state === 'crouch' && !o.diving)) : tadpoles.includes(o) && o.st === 'swim';
+// where to stand to strike at it: about 0.36 m short of it, on a spot it can stand on
+function herStance(px, pz) {
+  const h = heron, a0 = Math.atan2(h.z - pz, h.x - px);
+  for (const o of [0, 0.35, -0.35, 0.7, -0.7, 1.1, -1.1, 1.6, -1.6, 2.2, -2.2, 3.0])
+    for (const R of [0.40, 0.48, 0.33, 0.55]) { const x = px + Math.cos(a0 + o) * R, z = pz + Math.sin(a0 + o) * R; if (herCanStand(x, z)) return [x, z]; }
+  return null;
+}
+
+// ---------------------------------------------------------------- each frame
+function updateHeron(dt, t) {
+  const h = heron;
+  HU.uHerT.value = t;
+  if (h.frozen) { herMesh.visible = true; return; }                       // posed by hand (screenshots)
+  if (h.st === 'away') {
+    herMesh.visible = false; h.threat = null; h.inWater = false;
+    if (!lifeOff && G.uNight.value < 0.5) h.next -= dt;
+    if (h.next <= 0) herVisit();
+    if (h.st === 'away') return;
+  }
+  h.t += dt; h.visitT += dt;
+  const night = G.uNight.value > 0.5;
+  if ((night || h.visitT > h.stay) && (h.st === 'stand' || h.st === 'walk' || h.st === 'aim')) { h.st = 'takeoff'; h.t = 0; if (night) herCall(); }
+  let pose = h.pose, tall = HER.TALL, pitch = 0.4;
+  const onGround = h.st !== 'in' && h.st !== 'out';
+  if (h.st === 'in' || h.st === 'out') {
+    // flying: along the path, beating or gliding
+    const P = h.path.p, d = bezD(P, h.u, _b1), sp = Math.hypot(d[0], d[1], d[2]) || 1;
+    const fin = h.st === 'in' ? 1 - smooth(0.62, 1.0, h.u) : 1;
+    h.v = h.st === 'in' ? (h.hop ? lerp(0.7, 1.6, Math.min(fin, smooth(0, 0.3, h.u) + 0.3)) : lerp(0.7, 3.4, fin)) : Math.min(3.6, h.v + dt * 2.2);
+    h.u = Math.min(1, h.u + h.v * dt / sp);
+    bez(P, h.u, _b0); h.bx = _b0[0]; h.by = _b0[1]; h.bz = _b0[2];
+    const yawW = Math.atan2(d[2], d[0]);
+    h.roll = lerp(h.roll, clamp(wrapAngle(yawW - h.yaw) / Math.max(dt, 1e-3) * 0.3, -0.5, 0.5), 1 - Math.exp(-dt * 3));
+    h.yaw = yawW;
+    const climb = Math.atan2(d[1], Math.hypot(d[0], d[2]));
+    pose = 'fly';
+    if (h.st === 'in') {
+      // the approach: a long glide, then the braking flare with the legs swung forward
+      const flare = smooth(0.80, 1.0, h.u);
+      pitch = lerp(0.04 + climb * 0.3, 0.85, flare);
+      h.legsDown = h.hop ? Math.max(smooth(0.72, 0.95, h.u), 1 - smooth(0.0, 0.25, h.u)) : smooth(0.72, 0.95, h.u);
+      h.glide = !h.hop && h.u > 0.38 && h.u < 0.86 ? 1 : 0;
+      h.beatHz = h.u > 0.86 ? 2.6 : 1.9;
+      h.sweep = lerp(0, 0.45, flare);
+      if (h.u >= 1) {
+        h.st = 'land'; h.t = 0; h.x = h.path.p[3][0]; h.z = h.path.p[3][2]; h.gy = herGround(h.x, h.z); herPlantFeet();
+        const wet = pondSDF(h.x, h.z) < -0.02;
+        if (wet) { for (const F of h.feet) { addDrop(F.x, F.z, 0.06, -0.0016); splash(F.x, 0.005, F.z, 6, 0.3, 0.0025); } }
+        SFX.herStep(h.x, h.z, wet); strDisturb(h.x, h.z, 0.6, 1);
+        if (lifeRand() < 0.35) herCall();
+      }
+    } else {
+      pitch = 0.1 + climb * 0.5; h.legsDown = Math.max(0, 1 - h.t / 0.8); h.glide = 0; h.beatHz = 2.4; h.sweep = 0;
+      if (h.u >= 1) { heronGone(); return; }
+    }
+    h.open = 1;
+  } else if (h.st === 'land') {
+    // touchdown: the body settles over its legs and the wings fold away
+    const k = smooth(0, 0.9, h.t);
+    pitch = lerp(0.85, 0.42, k); tall = lerp(HER.TALL - 0.04, HER.TALL, k); pose = h.t < 0.4 ? 'fly' : 'up';
+    h.open = 1 - smooth(0.1, 0.9, h.t); h.glide = 0; h.beatHz = 2.4; h.sweep = lerp(0.45, 0, k); h.legsDown = 1;
+    if (h.t > 1.0) { h.st = 'stand'; h.t = 0; h.lookT = h.hop ? lr(0.4, 1.0) : lr(2.5, 5); }
+  } else if (h.st === 'stand') {
+    // tall and still, looking about
+    pose = 'up'; pitch = 0.42; tall = HER.TALL; h.open = 0;
+    h.hyGoal = h.yaw + 0.55 * Math.sin(h.t * 0.9 + 1.3) * Math.min(1, h.t);
+    herFeet(dt, false);
+    if (h.t > h.lookT) {
+      const pr = herPickPrey();
+      if (pr) {
+        h.kind = pr[0]; h.prey = pr[1];
+        if (!pr[2]) { h.st = 'aim'; h.t = 0; h.aimT = h.kind === 'tad' ? lr(0.35, 1.1) : lr(0.7, 2.0); }
+        else { h.goal = pr[2]; h.st = 'walk'; h.t = 0; h.walkV = lr(0.055, 0.08); }
+        h.idleT = 0;
+      } else {
+        // nothing in sight: wander a little along the shore, try somewhere else, and give up after a while
+        h.idleT += h.t; h.t = 0; h.lookT = lr(2, 4);
+        const sp = h.idleT > 9 && h.hops < 2 ? herSpot() : null;
+        if (sp && Math.hypot(sp[0] - h.x, sp[1] - h.z) > 0.9 && Math.hypot(sp[0] - h.x, sp[1] - h.z) < 5) { h.hopTo = sp; h.hops++; h.n.hop++; h.st = 'takeoff'; h.t = 0; h.idleT = 0; }
+        else if (h.idleT > 28) { h.st = 'takeoff'; h.t = 0; }
+        else for (let k = 0; k < 20; k++) { const a = lr(0, TAU), R = lr(0.25, 0.7), x = h.x + Math.cos(a) * R, z = h.z + Math.sin(a) * R; if (herCanStand(x, z)) { h.goal = [x, z]; h.prey = null; h.st = 'walk'; h.walkV = lr(0.09, 0.13); break; } }
+      }
+    }
+  } else if (h.st === 'walk') {
+    pose = h.prey ? 'stalk' : 'up'; pitch = h.prey ? 0.34 : 0.4; tall = h.prey ? HER.STALK : HER.TALL; h.open = 0;
+    let face;
+    if (h.prey) {
+      if (!herPreyOK(h.kind, h.prey)) { h.prey = null; h.st = 'stand'; h.t = 0; h.lookT = lr(0.8, 1.6); }
+      else {
+        const [px, , pz] = herPreyPos(h.kind, h.prey), dp = Math.hypot(px - h.x, pz - h.z);
+        if (dp < 0.52 && dp > 0.24 && Math.hypot(h.goal[0] - h.x, h.goal[1] - h.z) < 0.08) { h.st = 'aim'; h.t = 0; h.aimT = lr(0.6, 1.8); }
+        if (Math.hypot(px - h.goal[0], pz - h.goal[1]) > 0.55) { const s2 = herStance(px, pz); if (s2) h.goal = s2; }
+        if (dp < 0.9) face = Math.atan2(pz - h.z, px - h.x);
+      }
+    }
+    if (h.st === 'walk') {
+      const left = herWalk(dt, h.goal[0], h.goal[1], face);
+      if (left < 0) {
+        // something in the way: a few wing beats over it (after the prey, or just on), or another look round
+        if (h.prey && h.hops < 5 && herCanStand(h.goal[0], h.goal[1])) { h.hopTo = h.goal; h.hops++; h.n.hop++; h.st = 'takeoff'; h.t = 0; }
+        else { h.prey = null; h.st = 'stand'; h.t = 0; h.lookT = lr(1, 2); }
+      } else if (left < 0.012 || h.t > 25) { h.st = h.prey ? 'aim' : 'stand'; h.t = 0; h.aimT = h.kind === 'tad' ? lr(0.35, 1.1) : lr(0.6, 1.6); h.lookT = lr(1.5, 3.5); }
+    }
+  } else if (h.st === 'aim') {
+    // frozen, the neck drawn back, the bill following it
+    pose = 'stalk'; pitch = 0.32; tall = HER.STALK; h.open = 0;
+    herFeet(dt, false);
+    if (!herPreyOK(h.kind, h.prey)) { h.prey = null; h.st = 'stand'; h.t = 0; h.lookT = lr(0.8, 1.6); }
+    else {
+      const [px, py, pz] = herPreyPos(h.kind, h.prey), dp = Math.hypot(px - h.x, pz - h.z);
+      const want = Math.atan2(pz - h.z, px - h.x); h.yaw += clamp(wrapAngle(want - h.yaw), -dt * 1.2, dt * 1.2);
+      const J = HU.uNk.value[5]; h.hyGoal = want; h.hpGoal = Math.atan2(py - J.y, Math.hypot(px - J.x, pz - J.z));
+      if (dp > 0.62 || dp < 0.2) {
+        if (h.kind === 'tad') { h.prey = null; h.st = 'stand'; h.t = 0; h.lookT = lr(0.4, 1.0); }
+        else { h.st = 'walk'; h.t = 0; const s2 = herStance(px, pz); if (s2) h.goal = s2; else { h.prey = null; h.st = 'stand'; } }
+      }
+      else if (h.t > h.aimT && Math.abs(wrapAngle(want - h.yaw)) < 0.25) herStrikeStart(px, py, pz);
+    }
+  } else if (h.st === 'strike') {
+    pose = 'stalk'; pitch = lerp(0.32, 0.12, Math.sin(Math.PI * clamp(h.sT / 0.6, 0, 1))); tall = HER.STALK - 0.03 * Math.sin(Math.PI * clamp(h.sT / 0.6, 0, 1)); h.open = 0;
+    herFeet(dt, false);
+    h.sT += dt;
+    if (!h.sHit && h.sT >= 0.13) herStrikeHit();
+    if (h.sT >= 0.62) {
+      if (h.caught) { h.st = 'eat'; h.t = 0; h.eatT = h.kind === 'frog' ? 1.9 : 0.9; }
+      else { h.st = 'stand'; h.t = 0; h.lookT = lr(1.0, 2.2); }
+    }
+  } else if (h.st === 'eat') {
+    // the head comes up and the catch goes down the throat
+    pose = 'up'; pitch = 0.42; tall = HER.TALL; h.open = 0;
+    herFeet(dt, false);
+    const u = h.t / h.eatT;
+    h.hyGoal = h.yaw; h.hpGoal = u < 0.75 ? lerp(0.2, 0.95, smooth(0.05, 0.4, u)) : 0.1;
+    h.jaw = u > 0.3 && u < 0.5 ? 0.6 * Math.sin(Math.PI * (u - 0.3) / 0.2) : 0;
+    if (h.caught && h.caught !== 'gone' && u > 0.42) {
+      if (h.caught.state === 'held' && frogs.includes(h.caught)) {
+        const f = h.caught; if (focus && focus.ref === f) focusNote('アオサギに食べられた');
+        removeFrog(f); lifeStats.heron++;
+      }
+      h.caught = 'gone'; h.bulgeS = 0.97; SFX.herGulp(herBill.x, herBill.y, herBill.z);
+    }
+    if (h.caught === 'gone') { h.bulgeS = Math.max(0.1, h.bulgeS - dt * 0.75); h.bulge = 0.012 * (h.kind === 'frog' ? 1 : 0.4) * smooth(0.1, 0.25, h.bulgeS); }
+    if (h.t > h.eatT) {
+      h.caught = null; h.bulge = 0; h.catches++;
+      if (h.catches >= h.maxCatch || h.visitT > h.stay) { h.st = 'takeoff'; h.t = 0; }
+      else { h.st = 'stand'; h.t = 0; h.lookT = lr(2, 4); }
+    }
+  } else if (h.st === 'takeoff') {
+    // a crouch, a spring, and the big wings open
+    const k = smooth(0, 0.35, h.t);
+    pose = 'up'; pitch = lerp(0.42, 0.62, k); tall = lerp(HER.TALL, HER.LOW, k); h.open = smooth(0.05, 0.4, h.t); h.glide = 0; h.beatHz = 2.4; h.sweep = 0.2;
+    herFeet(dt, false);
+    if (h.t > 0.42) {
+      const sx = h.x, sz = h.z, gy = h.gy, by = gy + HER.LOW;
+      if (h.hopTo) {
+        // a few wing beats low over the water to the new spot
+        const [x, z] = h.hopTo, gy2 = herGround(x, z), dx = x - sx, dz = z - sz, dl = Math.hypot(dx, dz), ux = dx / dl, uz = dz / dl, top = Math.max(by, gy2 + HER.TALL) + 0.35 + 0.12 * dl;
+        h.path = herPath([sx, by, sz], [sx + ux * dl * 0.3, top, sz + uz * dl * 0.3], [x - ux * dl * 0.3, top, z - uz * dl * 0.3], [x, gy2 + HER.TALL, z]);
+        h.u = 0; h.v = 0.9; h.st = 'in'; h.t = 0; h.beatPh = 0; h.hop = true; h.x = x; h.z = z; h.gy = gy2; h.hopTo = null; h.legsDown = 0;
+      } else {
+        const a = lr(0, TAU), R = 11, ex = 0.85 + Math.cos(a) * R, ez = -0.25 + Math.sin(a) * R, dx = ex - sx, dz = ez - sz, dl = Math.hypot(dx, dz), ux = dx / dl, uz = dz / dl;
+        h.path = herPath([sx, by, sz], [sx + ux * 0.6, by + 1.1, sz + uz * 0.6], [ex - ux * 3, 4.6, ez - uz * 3], [ex, 5.4, ez]);
+        h.u = 0; h.v = 0.9; h.st = 'out'; h.t = 0; h.beatPh = 0.0; h.hop = false;
+      }
+      for (const F of h.feet) if (F.wet) { addDrop(F.x, F.z, 0.05, 0.0014); splash(F.x, 0.005, F.z, 8, 0.4, 0.0025); }
+      strDisturb(sx, sz, 0.8, 1);
+    }
+  }
+  if (onGround) {
+    // the body over the feet, rising and falling a touch as it walks
+    h.hipH = lerp(h.hipH, tall, 1 - Math.exp(-dt * 5));
+    const [c, s] = herFwd();
+    h.gy = (h.feet[0].ty + h.feet[1].ty) / 2;
+    h.bx = h.x + c * 0.0; h.bz = h.z + s * 0.0; h.by = h.gy + h.hipH + 0.004 * Math.sin(h.t * 5) * (h.st === 'walk' ? 1 : 0);
+    h.roll = lerp(h.roll, 0, 1 - Math.exp(-dt * 4));
+  }
+  h.pitch = lerp(h.pitch, pitch, 1 - Math.exp(-dt * (h.st === 'in' || h.st === 'out' ? 3 : 4)));
+  h.pose = pose;
+  // the threat it poses to the tadpoles: its bill in or near the water, and its feet while it wades
+  h.inWater = onGround && pondSDF(h.x, h.z) < -0.03;
+  h.threat = onGround && herBill.y < 0.06 && !(h.st === 'strike' && h.sT < 0.14) ? [herBill.x, herBill.z] : null;
+  herAware(dt);
+  herWet(dt);
+  herPoseUpdate(dt, t);
+  herMesh.visible = true;
+}
+function herStrikeStart(px, py, pz) {
+  const h = heron;
+  h.st = 'strike'; h.sT = 0; h.sHit = false; h.caught = null; h.n.strike++;
+  // lead a moving tadpole a little; aim at a frog where it sits
+  if (h.kind === 'tad') { const T = h.prey; px += Math.cos(T.yaw) * T.sp * 0.12; pz += Math.sin(T.yaw) * T.sp * 0.12; py = Math.max(py, -0.15); }
+  h.sP = [px, py, pz];
+  // a frog that has been watching may jump clear as the bill comes down
+  if (h.kind === 'frog') {
+    const f = h.prey, adult = f.dev >= LIFE.ADULT;
+    if (f.herAlert && lifeRand() < (adult ? 0.5 : 0.3)) { if (herFrogEscape(f, true)) { h.evaded = true; h.n.evade++; } }
+    else h.evaded = false;
+  } else h.evaded = false;
+  strDisturb(px, pz, 0.3, 0.8);
+}
+function herStrikeHit() {
+  const h = heron; h.sHit = true;
+  const [px, py, pz] = h.sP, onPad = h.kind === 'frog' ? pads[h.prey.pad] : null;
+  if (h.kind === 'frog') {
+    const f = h.prey, there = herPreyOK('frog', f) && Math.hypot(f.pos.x - px, f.pos.z - pz) < 0.04;
+    if (there && !h.evaded && lifeRand() < (f.herAlert ? 0.55 : 0.85)) {
+      f.state = 'held'; f.t = 0; f.tongue = null; f.hunt = null; if (f.prey) { f.prey.hunter = null; f.prey = null; } f.spawn = null; f.swallow = 0;
+      if (!frogs.some((o) => o !== f && o.pad === f.pad)) onPad.weight = 1;
+      h.caught = f; h.n.catch++; if (focus && focus.ref === f) focusNote('アオサギにつかまった');
+    } else if (there) herFrogEscape(f, true);
+    if (onPad) { onPad.vb -= 0.03; addDrop(onPad.x, onPad.z, onPad.r * 1.1, -0.0018); }
+    SFX.herStab(px, pz, false);
+  } else {
+    const T = h.prey, there = herPreyOK('tad', T) && Math.hypot(T.x - px, T.z - pz) < 0.035 + 0.02;
+    if (there && lifeRand() < (T.flee > 0 ? 0.3 : 0.6)) {
+      if (focus && focus.ref === T) focusNote('アオサギに食べられた');
+      tadGone(T, 'heron'); T.st = 'gone'; lifeStats.heron++;
+      h.caught = 'tad'; h.n.catch++;
+    }
+    addDrop(px, pz, 0.05, -0.0022); splash(px, 0.005, pz, 9, 0.42, 0.003);
+    SFX.herStab(px, pz, true);
+  }
+  // everything near the strike scatters
+  for (const T of tadpoles) if (T.st === 'swim' && Math.hypot(T.x - px, T.z - pz) < 0.35) { T.flee = 1.5; T.tx = T.x + (T.x - px) * 4; T.tz = T.z + (T.z - pz) * 4; }
+}
+// the frogs keep an eye on it: one that notices it goes still and stops calling, and may dive to safety
+function herAware(dt) {
+  const h = heron, ground = h.st !== 'in' && h.st !== 'out';
+  const hx = h.st === 'in' || h.st === 'out' ? h.bx : herBill.x, hz = h.st === 'in' || h.st === 'out' ? h.bz : herBill.z;
+  for (const f of frogs) {
+    if (f.dying || f.state === 'held') continue;
+    const d = Math.hypot(f.pos.x - hx, f.pos.z - hz), adult = f.dev >= LIFE.ADULT;
+    if (!f.herAlert) {
+      const p = (adult ? 0.7 : 0.45) * Math.exp(-d / 0.6) * (h.st === 'walk' || h.st === 'land' ? 1.6 : 1) * (ground || h.by < 1.2 ? 1 : 0);
+      if (lifeRand() < p * dt) { f.herAlert = true; h.n.alert++; if (focus && focus.ref === f && f.state === 'sit') focusNote('アオサギに気づいて身をかたくした'); }
+    } else {
+      f.callT = Math.max(f.callT, 12); f.next = Math.max(f.next, f.t + 3);
+      if (ground && d < 0.85 && h.st !== 'strike' && h.st !== 'eat' && lifeRand() < (adult ? 0.12 : 0.06) * dt && herFrogEscape(f, false)) h.n.escape++;
+    }
+  }
+}
+// standing in the water: now and then a ring spreads from its legs
+function herWet(dt) {
+  const h = heron; if (h.st === 'in' || h.st === 'out') return;
+  h.wetT -= dt;
+  if (h.wetT <= 0) { h.wetT = lr(1.2, 3); for (const F of h.feet) if (F.wet && F.u >= 1) addDrop(F.x, F.z, 0.02, 0.0003); }
+}
+
+// ---------------------------------------------------------------- the pose, put into the shader's uniforms
+const _wl = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]], _wt = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];
+function herWing(sd, open, flap, flex, sweep) {
+  const S = WING.open.L[0], W = WING.open.L[2];
+  for (const [src, dst, shut, trail] of [[WING.open.L, _wl, WING.shut.L, false], [WING.open.T, _wt, WING.shut.T, true]]) for (let i = 0; i < 5; i++) {
+    let [x, y, z] = src[i];
+    // the hand swings back about the wrist on the upstroke
+    if (i >= 3 || (trail && i >= 2)) { const c = Math.cos(flex), s = Math.sin(flex), dx = x - W[0], dz = z - W[2]; x = W[0] + dx * c - dz * s; z = W[2] + dx * s + dz * c; }
+    // the whole wing swings forward (braking) about the shoulder
+    { const c = Math.cos(sweep), s = Math.sin(sweep), dx = x - S[0], dz = z - S[2]; x = S[0] + dx * c + dz * s; z = S[2] - dx * s + dz * c; }
+    // and beats up and down
+    { const c = Math.cos(flap), s = Math.sin(flap), dy = y - S[1], dz = z - S[2]; y = S[1] + dy * c + dz * s; z = S[2] + dz * c - dy * s; }
+    const f = shut[i];
+    dst[i][0] = lerp(f[0], x, open); dst[i][1] = lerp(f[1], y, open); dst[i][2] = lerp(f[2], z, open) * sd;
+  }
+}
+// the knee seen on a heron is really its ankle, and it bends backwards
+function herLegIK(H, F, bx, by, bz, K) {
+  const a = HER.TIB, b = HER.TAR;
+  let dx = F.x - H.x, dy = F.y - H.y, dz = F.z - H.z; const D = Math.hypot(dx, dy, dz) || 1e-4;
+  const ux = dx / D, uy = dy / D, uz = dz / D;
+  if (D >= a + b - 1e-4) { F.set(H.x + ux * (a + b - 1e-4), H.y + uy * (a + b - 1e-4), H.z + uz * (a + b - 1e-4)); K.set(H.x + ux * a, H.y + uy * a, H.z + uz * a); return; }
+  const dot = bx * ux + by * uy + bz * uz; let px = bx - ux * dot, py = by - uy * dot, pz = bz - uz * dot; const pl = Math.hypot(px, py, pz) || 1; px /= pl; py /= pl; pz /= pl;
+  const along = (a * a - b * b + D * D) / (2 * D), hh = Math.sqrt(Math.max(a * a - along * along, 0));
+  K.set(H.x + ux * along + px * hh, H.y + uy * along + py * hh, H.z + uz * along + pz * hh);
+}
+const _hip = V3(), _ft = V3(), _kn = V3();
+function herPoseUpdate(dt, t) {
+  const h = heron, U = HU;
+  const [c, s] = herFwd();
+  // body
+  HB.makeTranslation(h.bx, h.by, h.bz).multiply(_hm.makeRotationY(-h.yaw));
+  if (h.roll) HB.multiply(_hm.makeRotationX(h.roll));
+  HB.multiply(_hm.makeRotationZ(h.pitch));
+  U.uHB.value.copy(HB);
+  // wings: beating in flight, gliding, or folded
+  if (h.open > 0.01) {
+    if (h.glide > 0.5) { h.flap = lerp(h.flap, 0.08 + 0.03 * Math.sin(t * 1.3), 1 - Math.exp(-dt * 3)); h.flex = lerp(h.flex, 0.18, 1 - Math.exp(-dt * 3)); h.beat = 0; }
+    else {
+      const prev = h.beatPh; h.beatPh = (h.beatPh + dt * h.beatHz) % 1;
+      const ph = h.beatPh;
+      if (ph < 0.5) { const e = 0.5 - 0.5 * Math.cos(Math.PI * ph / 0.5); h.flap = lerp(0.8, -0.6, e); h.flex = 0.12; }
+      else { const u = (ph - 0.5) / 0.5, e = 0.5 - 0.5 * Math.cos(Math.PI * u); h.flap = lerp(-0.6, 0.8, e); h.flex = 0.12 + 0.55 * Math.sin(Math.PI * u); }
+      if (prev < 0.04 && ph >= 0.04) SFX.herFlap(h.bx, h.by, h.bz, h.st === 'out' && h.t < 2 ? 1.2 : 0.8);
+    }
+  } else { h.flap = 0; h.flex = 0.15; }
+  for (const sd of [1, -1]) {
+    herWing(sd, h.open, h.flap, h.flex, h.sweep);
+    const o = sd > 0 ? 0 : 5;
+    for (let i = 0; i < 5; i++) { U.uWL.value[o + i].set(_wl[i][0], _wl[i][1], _wl[i][2]).applyMatrix4(HB); U.uWT.value[o + i].set(_wt[i][0], _wt[i][1], _wt[i][2]).applyMatrix4(HB); }
+  }
+  // neck: ease towards the pose (or, in a strike, stretch out to the target)
+  herNeckB.set(HER.NB[0], HER.NB[1], 0).applyMatrix4(HB);
+  const goal = NECKP[h.pose], kk = 1 - Math.exp(-dt * (h.pose === 'fly' || h.st === 'land' ? 5 : 3.2));
+  const look = wrapAngle(h.hyGoal - h.yaw);
+  for (let i = 0; i < 6; i++) { const n = h.neck[i]; n[0] = lerp(n[0], goal[i][0], kk); n[1] = lerp(n[1], goal[i][1], kk); n[2] = lerp(n[2], Math.sin(clamp(look, -1, 1)) * 0.06 * (i / 5) ** 2, kk); }
+  const lat = [-s, c];
+  let strikeK = 0;
+  if (h.st === 'strike') { const u = h.sT; strikeK = u < 0.13 ? 1 - Math.pow(1 - u / 0.13, 2.5) : u < 0.3 ? 1 : 1 - smooth(0.3, 0.62, u); }
+  const pts = U.uNk.value;
+  for (let i = 0; i < 6; i++) { const n = h.neck[i]; pts[i].set(herNeckB.x + c * n[0] + lat[0] * n[2], herNeckB.y + n[1], herNeckB.z + s * n[0] + lat[1] * n[2]); }
+  let hy = h.hy, hp = h.hp;
+  if (h.st !== 'strike') {
+    // the head turns smoothly (and in quick little jerks when it is looking about)
+    const hpG = h.st === 'aim' || h.st === 'eat' ? h.hpGoal : NECK_PITCH[h.pose];
+    const hyG = h.st === 'aim' || h.st === 'stand' || h.st === 'eat' ? h.hyGoal : h.yaw;
+    h.hy += wrapAngle(hyG - h.hy) * (1 - Math.exp(-dt * 4)); h.hp = lerp(h.hp, hpG, 1 - Math.exp(-dt * 4));
+    hy = h.hy; hp = h.hp;
+  }
+  if (strikeK > 0) {
+    // stretched out from the base of the neck to just short of the target, bill first
+    const [px, py, pz] = h.sP, B = herNeckB;
+    let dx = px - B.x, dy = py - B.y, dz = pz - B.z; const L = Math.hypot(dx, dy, dz) || 1; dx /= L; dy /= L; dz /= L;
+    const reach = Math.min(L - HER.BILL, 0.42), jx = B.x + dx * reach, jy = B.y + dy * reach, jz = B.z + dz * reach;
+    for (let i = 1; i < 6; i++) { const u = i / 5, bow = Math.sin(Math.PI * u) * 0.03; const q = pts[i]; q.set(lerp(q.x, B.x + (jx - B.x) * u, strikeK), lerp(q.y, B.y + (jy - B.y) * u + bow, strikeK), lerp(q.z, B.z + (jz - B.z) * u, strikeK)); }
+    const sy = Math.atan2(dz, dx), spt = Math.atan2(dy, Math.hypot(dx, dz));
+    hy = h.hy + wrapAngle(sy - h.hy) * strikeK; hp = lerp(h.hp, spt, strikeK);
+  }
+  // head and jaw
+  const P5 = pts[5];
+  HH.makeTranslation(P5.x, P5.y, P5.z).multiply(_hm.makeRotationY(-hy)).multiply(_hm.makeRotationZ(hp));
+  U.uHH.value.copy(HH);
+  if (h.jawCall > 0) h.jawCall -= dt;
+  const jaw = Math.max(h.jaw, h.jawCall > 0 ? Math.sin(Math.PI * clamp(h.jawCall / 0.5, 0, 1)) * 0.5 : 0);
+  U.uHJ.value.copy(HH).multiply(_hm.makeTranslation(0.03, -0.002, 0)).multiply(_hm2h.makeRotationZ(-jaw * 0.35)).multiply(_hm3h.makeTranslation(-0.03, 0.002, 0));
+  herBill.set(HER.BILL, -0.0035, 0).applyMatrix4(HH);
+  _hv.set(0, 0, 1).transformDirection(HB); U.uNkS.value[0].copy(_hv);
+  _hv.set(0, 0, 1).transformDirection(HH); U.uNkS.value[1].copy(_hv);
+  U.uBulge.value.set(h.bulgeS, h.bulge, 0, 0);
+  // legs: standing on the planted feet, or trailing behind in flight (swinging forward to land)
+  const bwd = V3(-c, 0, -s);
+  for (let i = 0; i < 2; i++) {
+    const sd = i === 0 ? 1 : -1, F = h.feet[i];
+    _hip.set(HER.HIP[0], HER.HIP[1], HER.HIP[2] * sd).applyMatrix4(HB);
+    if (h.st === 'in' || h.st === 'out') {
+      const trail = _hv2.set(-0.46, -0.05, 0.03 * sd).applyMatrix4(HB);
+      const [fx, fz] = herFootHome(i, h.st === 'in' ? h.path.p[3][0] : h.bx, h.st === 'in' ? h.path.p[3][2] : h.bz, h.yaw);
+      const ldx = lerp(trail.x, fx, h.legsDown), ldy = lerp(trail.y, h.st === 'in' ? Math.max(herGround(fx, fz), _hip.y - 0.36) : _hip.y - 0.33, h.legsDown), ldz = lerp(trail.z, fz, h.legsDown);
+      _ft.set(ldx, ldy, ldz);
+    } else _ft.set(F.x, F.y, F.z);
+    // the ankle bends back (relative to the body when trailing, to the ground when standing)
+    const bendB = h.st === 'in' || h.st === 'out' ? _hv2.set(0, -1, 0).transformDirection(HB) : bwd;
+    herLegIK(_hip, _ft, bendB.x, bendB.y, bendB.z, _kn);
+    U.uLg.value[i * 3].copy(_hip); U.uLg.value[i * 3 + 1].copy(_kn); U.uLg.value[i * 3 + 2].copy(_ft);
+    // toes: spread flat on the ground, or closed and trailing
+    const flying = (h.st === 'in' && h.legsDown < 0.6) || h.st === 'out';
+    const lifted = !flying && F.u < 1 ? Math.sin(Math.PI * F.u) : 0;
+    const fyaw = h.yaw + 0.12 * sd;
+    const TOES = [[-0.5 * sd, 0.068], [0, 0.093], [0.45 * sd, 0.074], [Math.PI, 0.05]];
+    for (let k = 0; k < 4; k++) {
+      const [ta, tl] = TOES[k], q = U.uToe.value[i * 4 + k];
+      if (flying) { const dx = _ft.x - _kn.x, dy = _ft.y - _kn.y, dz = _ft.z - _kn.z, dl = Math.hypot(dx, dy, dz) || 1; const spr = (k - 1.5) * 0.008; q.set(_ft.x + dx / dl * tl * 0.75 - s * spr, _ft.y + dy / dl * tl * 0.75, _ft.z + dz / dl * tl * 0.75 + c * spr); }
+      else { const a = fyaw + ta * (1 - 0.6 * lifted); q.set(_ft.x + Math.cos(a) * tl * (1 - 0.35 * lifted), _ft.y - 0.002 - tl * 0.55 * lifted, _ft.z + Math.sin(a) * tl * (1 - 0.35 * lifted)); }
+    }
+  }
+  U.uWaterL.value = h.inWater ? waterH(h.x, h.z, t) : -1;
+  U.uWOpen.value = h.open;
+}
+// in the bill: the caught frog hangs limp across it
+function heronHoldFrog(f) {
+  _hv2.set(1, 0, 0).transformDirection(HH);                                  // gripped a little behind the tip
+  f.pos.set(herBill.x - _hv2.x * 0.024, herBill.y - _hv2.y * 0.024 - 0.018 * FROG_SCALE * f.size, herBill.z - _hv2.z * 0.024);
+  f.yaw = heron.hy + Math.PI / 2; f.pitchJ = 0.35; f.k = 1; f.kf = 0.8; f.crouch = 0; f.sw = 0;
+}
+// tapping on it, or right next to it
+function heronTapped(o, d) {
+  const h = heron; if (h.st === 'away' || h.st === 'in' || h.st === 'out') return false;
+  // a capsule from its feet to its head
+  const ax = h.x, ay = h.gy, az = h.z, bx = herNeckB.x, by = herNeckB.y + 0.3, bz = herNeckB.z;
+  let best = 1e9;
+  for (let k = 0; k <= 10; k++) {
+    const u = k / 10, px = lerp(ax, bx, u), py = lerp(ay, by, u), pz = lerp(az, bz, u);
+    const tx = px - o.x, ty = py - o.y, tz = pz - o.z, along = tx * d.x + ty * d.y + tz * d.z; if (along <= 0) continue;
+    best = Math.min(best, Math.sqrt(Math.max(tx * tx + ty * ty + tz * tz - along * along, 0)) - Math.max(0.12, along * 0.02));
+  }
+  if (best < 0) return herStartle();
+  // a tap on the water close to it
+  if (d.y < -1e-4) { const tt = -o.y / d.y, x = o.x + d.x * tt, z = o.z + d.z * tt; if (Math.hypot(x - h.x, z - h.z) < 0.5) return herStartle(); }
+  return false;
 }
 
 function updateParticles(dt) {
@@ -7693,6 +8576,7 @@ function update(dt) {
   updateParticles(dt);
   updateFireflies(dt, t);
   updateLife(dt, t);
+  updateHeron(dt, t);
   ambient(dt);
 }
 let PROF = null;
@@ -7997,6 +8881,45 @@ const SFX = {
     sSlosh(d, t, 0.25, 1000, 500, 0.25, 0.01);
     sDroplets(d, t + 0.05, 3 + Math.floor(rnd() * 3), 0.3, 0.14);
   },
+  // the heron's wings: each downstroke a soft, deep "whoof" of air
+  herFlap(x, y, z, k = 1) {
+    const d = sndAt(x, y, z, 0.42 * k, 0.25, 0.6); if (!d) return; const t = sNow();
+    const f = sNoise(d, t, 0.36, 'lowpass', 340, 0.7, 0.5, 0.09, 'brown'); f.frequency.exponentialRampToValueAtTime(180, t + 0.36);
+    const g = sNoise(d, t + 0.02, 0.26, 'bandpass', 760, 0.6, 0.12, 0.08, 'pink'); g.frequency.exponentialRampToValueAtTime(420, t + 0.28);
+  },
+  // its call: a loud, hoarse, croaking "gwaa"
+  herCall(x, y, z) {
+    const d = sndAt(x, y, z, 2.8, 0.55, 1.2); if (!d) return; const c = SND.ctx, t = sNow();
+    const dur = rr(0.36, 0.52), f0 = rr(290, 340);
+    const o = c.createOscillator(); o.setPeriodicWave(SND.buzz);
+    o.frequency.setValueAtTime(f0 * 1.1, t); o.frequency.linearRampToValueAtTime(f0, t + 0.07); o.frequency.linearRampToValueAtTime(f0 * 0.8, t + dur);
+    const am = c.createOscillator(); am.frequency.value = rr(24, 32); const amg = c.createGain(); amg.gain.value = 0.32;
+    const g = c.createGain(); g.gain.value = 0.62; am.connect(amg); amg.connect(g.gain);
+    const b1 = c.createBiquadFilter(); b1.type = 'bandpass'; b1.frequency.value = 950; b1.Q.value = 2.4;
+    const b2 = c.createBiquadFilter(); b2.type = 'bandpass'; b2.frequency.value = 2250; b2.Q.value = 3.2;
+    const g2 = c.createGain(); g2.gain.value = 0.45;
+    const env = c.createGain(); env.gain.setValueAtTime(0, t); env.gain.linearRampToValueAtTime(0.55, t + 0.04); env.gain.setValueAtTime(0.55, t + dur * 0.55); env.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(b1); g.connect(b2); b1.connect(env); b2.connect(g2); g2.connect(env); env.connect(d);
+    o.start(t); am.start(t); o.stop(t + dur + 0.05); am.stop(t + dur + 0.05);
+    sNoise(d, t, dur, 'bandpass', 1500, 1.1, 0.07, 0.04, 'pink');
+  },
+  // a long leg lifted out of the shallows and set down again: water running off, a soft slosh
+  herStep(x, z, wet) {
+    const d = sndAt(x, 0, z, 1.4, 0.15, 0.5); if (!d) return; const t = sNow();
+    if (wet) { sSlosh(d, t, 0.3, 720, 330, 0.2, 0.05); sBubble(d, t + 0.04, rr(480, 680), rr(850, 1150), 0.04, 0.07, 0.006); }
+    else sNoise(d, t, 0.08, 'lowpass', 800, 0.6, 0.08, 0.02, 'pink');
+  },
+  // the stab: the bill into the water, or onto a leaf
+  herStab(x, z, water) {
+    const d = sndAt(x, 0, z, 0.6, 0.22, 0.6); if (!d) return; const t = sNow();
+    if (water) { sNoise(d, t, 0.08, 'bandpass', 1300, 0.9, 0.3, 0.016, 'pink'); sBubble(d, t + 0.012, 340, 820, 0.09, 0.42, 0.006); sSlosh(d, t + 0.02, 0.38, 1000, 380, 0.26); sDroplets(d, t + 0.06, 3, 0.25, 0.12); }
+    else { sTone(d, t, 0.07, 150, 95, 0.38, 'sine', 0.008); sNoise(d, t, 0.06, 'bandpass', 1200, 0.9, 0.24, 0.016, 'pink'); sSlosh(d, t + 0.02, 0.25, 850, 400, 0.16); }
+  },
+  // swallowing: a deep, soft gulp
+  herGulp(x, y, z) {
+    const d = sndAt(x, y, z, 0.18, 0.12, 0.5); if (!d) return; const t = sNow();
+    sTone(d, t, 0.14, 170, 90, 0.4, 'sine', 0.025); sNoise(d, t, 0.1, 'lowpass', 500, 0.7, 0.15, 0.015, 'pink');
+  },
   // one "ge" of a tree frog's call: a buzz of pulses ringing through the inflated vocal sac
   croak(f) {
     const d = sndAt(f.pos.x, f.pos.y + 0.02, f.pos.z, 0.9, 0.35, 0.4); if (!d) return; const c = SND.ctx, t = sNow();
@@ -8185,7 +9108,7 @@ API.sndRender = async (sec = 8, which = 'main') => {
   const c = new OfflineAudioContext(2, 44100 * sec, 44100);
   const save = Object.assign({}, SND);
   Object.assign(SND, sndGraph(c)); SND.ctx = c; SND.ok = true; SND.voices = 0; SND.tOver = 0; SND.master.gain.value = 0.9;
-  SND.amb = sndAmbience(c);
+  SND.amb = which === 'heron' ? null : sndAmbience(c);          // (the heron's sounds on their own)
   const cp = camera.position, ev = [];
   const at = (t, fn) => { SND.tOver = t; fn(); };
   const f0 = Object.assign({ male: true, size: 1, i: 0 }, frogs[0] || {}, { pos: V3(cp.x + 0.6, cp.y - 0.3, cp.z - 0.6) });
@@ -8202,6 +9125,14 @@ API.sndRender = async (sec = 8, which = 'main') => {
     at(3.0, () => SFX.hop(x, y, z)); at(3.25, () => SFX.tongue(x, y, z)); at(3.31, () => SFX.tongueHit(x, y, z)); at(3.45, () => SFX.plunk(x, z, 1));
     at(4.6, () => SFX.frogGulp(x, y, z, 1)); at(5.4, () => SFX.tongue(x, y, z)); at(5.46, () => SFX.tongueHit(x, y, z)); at(6.2, () => SFX.frogGulp(x, y, z, 2));
     at(7.0, () => SFX.plip(x, z, 1));
+  } else if (which === 'heron') {
+    // the heron about a metre away: wing beats, its call, wading steps, a stab into the water and onto a leaf, a gulp
+    const x = cp.x, y = cp.y - 0.2, z = cp.z - 1.2;
+    [0.2, 0.65, 1.1, 1.55].forEach((t, i) => at(t, () => SFX.herFlap(x - 0.3 + i * 0.2, y + 0.5, z, 1)));
+    at(2.2, () => SFX.herCall(x, y + 0.5, z));
+    at(3.2, () => SFX.herStep(x, z, true)); at(3.9, () => SFX.herStep(x + 0.1, z, true));
+    at(4.6, () => SFX.herStab(x, z, true)); at(5.6, () => SFX.herStab(x, z, false));
+    at(6.6, () => SFX.herGulp(x, y + 0.5, z)); at(7.2, () => SFX.herCall(x, y + 0.5, z));
   } else {
   at(0.3, () => SFX.croak(f0)); at(0.64, () => SFX.croak(f0)); at(0.98, () => SFX.croak(f0));
   at(1.6, () => SFX.plip(cp.x - 0.5, cp.z - 0.8)); at(2.0, () => SFX.gulp(cp.x, cp.z - 1.0, 0.5));
@@ -8391,7 +9322,7 @@ const warmRT = makeRT(4, 4, { depthBuffer: true });
 async function compileAll() {
   const jobs = [], seen = new Set();
   camera.layers.enableAll();
-  const drawObj = (o) => { const fc = o.frustumCulled; o.frustumCulled = false; renderer.setRenderTarget(warmRT); renderer.render(o, camera); o.frustumCulled = fc; };
+  const drawObj = (o) => { const fc = o.frustumCulled, vis = o.visible; o.frustumCulled = false; o.visible = true; renderer.setRenderTarget(warmRT); renderer.render(o, camera); o.frustumCulled = fc; o.visible = vis; };
   scene.traverse((o) => {
     if (!(o.isMesh || o.isPoints || o.isLine || o.isSprite) || !o.material || Array.isArray(o.material) || seen.has(o.material)) return;
     seen.add(o.material);
@@ -8465,6 +9396,7 @@ API.step = (n = 1) => { const dt = 1 / OPTS.fps; for (let i = 0; i < n; i++) { u
 API.profile = () => { PROF = []; PROF.t = performance.now(); mark('start'); update(1 / 30); render(1 / 30); const r = PROF; PROF = null; return r.map(x => x[0] + ':' + Math.round(x[1])).join(' '); };
 API.dbg_str = () => ({ striders, strStats, frogs });
 API.dbg_ff = () => fireflies;
+API.dbg_heron = () => ({ heron, HU, herCanStand, herSpot, herMesh });
 API.dbg_life = () => ({ tadpoles, eggs, frogs, tfood, algae, algaeCap, lifeStats, get worldH() { return worldH; }, LIFE, frogPool });
 API.dbg_veg2 = () => ({ lotus, lotusFloat, lotusStand, willowTips, LOTUS0, WILLOW });
 API.dbg_veg = () => ({ fallen, weeds, gust, plumes: NPLUME, NWEED, duck, duckRafts, hishi, fluff, typhaS, TYPHA, NDUCK, SAZANKA, HIGAN, TSUWA, FERNS, NCARD, ribVerts: RIB.p.length / 3 });
@@ -8512,6 +9444,21 @@ API.cmd = (name, ...a) => {
   if (name === 'life') { lifeOff = a[0] === 'off'; return !lifeOff; }
   if (name === 'lifefresh') { lifeOff = false; lifeFresh(); return tadpoles.length; }
   if (name === 'spawn') { const f = frogs[a[0] ?? 0]; if (!f) return null; startSpawn(f); return f.spawn ? [f.spawn.x, f.spawn.z] : null; }
+  if (name === 'tap') { tap(a[0], a[1]); return heron.st; }
+  if (name === 'heron') { if (heron.st === 'away') { heron.next = 0; updateHeron(0, G.uTime.value); } return heron.st; }
+  if (name === 'heronat') {
+    // the heron standing at (x, z) facing yaw, in state a[3] (default: standing still)
+    const h = heron; h.x = a[0]; h.z = a[1]; h.yaw = a[2] ?? 0; h.gy = herGround(h.x, h.z); h.st = a[3] || 'stand'; h.t = 0; h.lookT = a[4] ?? 1e9; h.visitT = 0; h.stay = 1e9;
+    h.open = 0; h.pose = a[5] || 'up'; h.neck = NECKP[h.pose].map(([f, u]) => [f, u, 0]); h.hipH = HER.TALL; h.pitch = 0.42; h.hy = h.hyGoal = h.yaw; h.hp = NECK_PITCH[h.pose];
+    h.frozen = false; herPlantFeet(); updateHeron(0, G.uTime.value); return herCanStand(h.x, h.z);
+  }
+  if (name === 'heronfly') {
+    // frozen mid-flight at (x, y, z) heading yaw, wing beat phase a[4] (or gliding if a[4] < 0)
+    const h = heron; h.st = 'out'; h.path = herPath([a[0], a[1], a[2]], [a[0] + Math.cos(a[3]) * 3, a[1], a[2] + Math.sin(a[3]) * 3], [a[0] + Math.cos(a[3]) * 6, a[1], a[2] + Math.sin(a[3]) * 6], [a[0] + Math.cos(a[3]) * 9, a[1], a[2] + Math.sin(a[3]) * 9]);
+    h.u = 0; h.v = 0; h.t = 5; h.open = 1; h.pose = 'fly'; h.neck = NECKP.fly.map(([f, u]) => [f, u, 0]); h.yaw = h.hy = h.hyGoal = a[3]; h.hp = 0; h.pitch = 0.1; h.legsDown = 0; h.roll = 0;
+    h.bx = a[0]; h.by = a[1]; h.bz = a[2];
+    h.glide = a[4] < 0 ? 1 : 0; h.beatPh = Math.max(0, a[4]); h.beatHz = 0; h.frozen = false; herPoseUpdate(0, G.uTime.value); h.frozen = true; herMesh.visible = true; return true;
+  }
   if (name === 'tfeed') { feedTadpoles(a[0], a[1]); return tfood.length; }
   if (name === 'lifereload') { lifeSave(); for (const f of frogs.slice()) removeFrog(f); tadpoles.length = 0; eggs.length = 0; tfood.length = 0; return lifeLoad(); }
   if (name === 'eggs') { const E = layEggs(a[0], a[1], a[2] ?? 12, { laid: worldH - (a[3] ?? 0) }); return E.list.length; }
