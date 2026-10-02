@@ -63,6 +63,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 .hint{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);font-size:12px;letter-spacing:.08em;color:var(--ink);background:var(--glass);border:1px solid var(--line);padding:8px 14px;border-radius:999px;white-space:nowrap;pointer-events:none;transition:opacity .8s;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
 .hint.gone{opacity:0}
 .fcard{position:fixed;left:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 62px);max-width:min(340px,calc(100% - 32px));box-sizing:border-box;padding:10px 14px 11px;border-radius:14px;background:var(--glass);border:1px solid var(--line);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);pointer-events:none;font-size:12px;line-height:1.6;letter-spacing:.04em;color:var(--ink-2)}
+.title p span{white-space:nowrap}
 .fcard b{display:block;margin-bottom:2px;font-family:var(--f-display);font-weight:600;font-size:14px;letter-spacing:.1em;color:var(--ink)}
 .fcard span{display:block}
 #fc-age{color:var(--ink);font-variant-numeric:tabular-nums}
@@ -145,7 +146,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
     <dt>ススキ</dt><dd>対岸の株。穂は絹毛の房の集まりで、逆光（とくに夕方）で透けて光る。突風が来ると草も木もなびき、紅葉が一斉に散り、水面にさざ波が走る</dd>
     <dt>カエルの一生</dt><dd>池の中では1秒が1時間で、卵からおよそ50日（20分）で大人のカエルになる。卵は3日でふ化し、オタマジャクシは池の底の藻を食べて育ち、後ろ足、前足の順に生えて、26日ほどで睡蓮の葉に上がる。上がった子ガエルはしっぽが縮んで消えるまで何も食べず、そのあとアメンボを捕って大きくなり、大人になってもゆっくり育ち続ける。藻はゆっくりしか戻らないので取り合いになる。大きいものが先に食べ、飢えたものは弱ったものをかじり、死んだものはほかが食べ、深みへ出たものは鯉に食べられるので、カエルになれるのはほんの一部。葉の上がいっぱい（カエルが8匹）のときは、岸から池の外へ旅立っていく。大人のメスはオスと連れ立って浅瀬へ泳いで行き、卵を産む。寿命は一匹ずつ違い、アメンボが捕れなければ飢えても死ぬ。全部いなくなると、新しい卵がどこからか現れる。様子はこの端末のブラウザに保存され、次に開くと続きから始まる（閉じている間は進まない）</dd>
     <dt>アオサギ</dt><dd>昼間、ときどき木の上を越えて飛んできて、岸や浅瀬に降りる。背を伸ばしてあたりを見回し、首をS字に縮めてゆっくり歩き、じっと狙いを定めてくちばしで一突きする。浅瀬のオタマジャクシや葉の上のカエルを捕り、カエルは上を向いて飲み込む。届く獲物がいなければ、短く飛んで場所を変える。カエルは近づくアオサギに気づくと身をかたくして鳴きやみ、水に飛び込んで遠くの葉へ逃げたり、突かれる瞬間に跳んでかわしたりする。オタマジャクシはくちばしから散り、鯉は離れて深みへ。何匹か捕るか、しばらくすると、しわがれた声で鳴いて飛び去る（近くをタップすると驚いて飛び立つ）。夜は来ない</dd>
-    <dt>見守る</dt><dd>「カエル」で一匹を追っている間は、左下に名札が出る（メニューの「名札」で出す・消すを切り替え）。生まれてからの日数と時間、育ち具合、体長、おなかの具合。メニューの「餌」を「オタマ」にして水面をタップすると、オタマジャクシの餌が沈んでいき、底に着くと近くのオタマジャクシが集まって食べる</dd>
+    <dt>見守る</dt><dd>「カエル」で一匹を追っている間は、左下に名札が出る（メニューの「名札」で出す・消すを切り替え）。番号と何世代目か（最初のオタマジャクシが第1世代、その子が第2世代）、生まれてからの日数と時間、育ち具合、体長、おなかの具合。題名の下には、いま池にいるいちばん新しい世代も出る。メニューの「餌」を「オタマ」にして水面をタップすると、オタマジャクシの餌が沈んでいき、底に着くと近くのオタマジャクシが集まって食べる</dd>
     <dt>カエル</dt><dd>ニホンアマガエル（同時に最大8匹）を SDF レイマーチングで描画。ふつうは緑色で、まれに黄色の色素を持たない水色が生まれる。メスはオスより大きく育つ。指先の吸盤、目を通る黒い筋、鳴嚢を膨らませて鳴く様子、呼吸・まばたき・葉から葉への跳躍。ときどき水へ飛び込み、蹴り→滑走→脚の引き戻しの平泳ぎで別の葉まで泳いで這い上がる</dd>
   </dl>
   <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒（メニューの「餌」で鯉の餌とオタマジャクシの餌を切り替え）、「リセット」を2回続けて押すと、池の生き物がオタマジャクシ40匹からやり直しになります。カエルをタップすると跳びます。「カエル」は押すたびに、カエルもオタマジャクシも番号（No.）の小さい順に次の一匹へ移ります。追っている間は、ほかのカエルやオタマジャクシをタップするとそちらを追います。</p>

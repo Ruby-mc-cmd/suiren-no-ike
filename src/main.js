@@ -4280,7 +4280,7 @@ function makeFrog(o) {
     prey: null, huntT: 0, huntCool: 0, approachCool: 0, fullT: o.fullT ?? lr(2, 10), tongue: null, swallow: 0, gulped: false, mouth: 0, wipe: 0, wipePh: 0, wipeSide: 1,
     hunt: null, chase: null, chaseT: 0, chaseCool: 0, edgeCool: 0, mouthW: V3(), bodyO: [0, 0.0192, 0], pitchB: 0.34,
     // life: id, hour of birth (hatching), development (hours of growth), reserves, health, adult size, lifespan
-    id: o.id ?? lifeId++, born: o.born ?? 0, dev: o.dev ?? 1200, energy: o.energy ?? 0.8, health: o.health ?? 1,
+    id: o.id ?? lifeId++, gen: o.gen ?? 1, born: o.born ?? 0, dev: o.dev ?? 1200, energy: o.energy ?? 0.8, health: o.health ?? 1,
     maxSize: o.maxSize ?? o.size, life: o.life ?? Infinity, cool: o.cool ?? lr(60, 240), tail: o.tail ?? 0, dying: 0, cause: null, spawn: null,
   };
   frogs.push(f);
@@ -6583,6 +6583,9 @@ void main(){
 }`, {}, { transparent: true, depthWrite: false }));
 eggMesh.frustumCulled = false; eggMesh.renderOrder = 3;
 onLayers(eggMesh, LAYER.REFR); scene.add(eggMesh);
+// generations: the first tadpoles are the 1st; a pair's eggs are one more than the younger parent's generation, and a
+// clutch that appears after everyone has gone counts on from the newest generation the pond has had
+let lifeGenMax = 1;
 function layEggs(x, z, n, opts = {}) {
   const list = [];
   for (let i = 0; i < n; i++) {
@@ -6590,7 +6593,8 @@ function layEggs(x, z, n, opts = {}) {
     const a = lr(0, TAU), r = Math.sqrt(lifeRand()) * 0.012;
     list.push([Math.cos(a) * r, -lr(0, 0.014), Math.sin(a) * r, lifeRand()]);
   }
-  const E = { x, z, y: -0.012, laid: opts.laid ?? worldH, list };
+  const E = { x, z, y: -0.012, laid: opts.laid ?? worldH, list, gen: opts.gen ?? 1 };
+  lifeGenMax = Math.max(lifeGenMax, E.gen);
   eggs.push(E); lifeStats.laid += n;
   return E;
 }
@@ -6622,7 +6626,7 @@ function feedTadpoles(x, z) {
 // ---------------------------------------------------------------- tadpoles
 function makeTadpole(o) {
   if (tadpoles.length >= LIFE.TAD_MAX) return null;
-  const T = { id: o.id ?? lifeId++, born: o.born ?? worldH, dev: o.dev ?? 0, x: o.x, z: o.z, y: o.y ?? floorY(o.x, o.z) + 0.01, yaw: o.yaw ?? lr(0, TAU),
+  const T = { id: o.id ?? lifeId++, gen: o.gen ?? 1, born: o.born ?? worldH, dev: o.dev ?? 0, x: o.x, z: o.z, y: o.y ?? floorY(o.x, o.z) + 0.01, yaw: o.yaw ?? lr(0, TAU),
     vx: 0, vz: 0, vy: 0, sp: 0, energy: o.energy ?? 0.6, health: o.health ?? 1, st: 'swim', tx: o.x, tz: o.z, retarget: 0, air: lr(20, 90), airT: 0,
     ph: lr(0, TAU), amp: 0.05, bend: 0, bite: 0, hunt: null, meat: 0, deadT: 0, green: o.green ?? lifeRand() > 0.08, seed: lifeRand(), climb: null, wait: 0, cause: null, flee: 0 };
   tadpoles.push(T);
@@ -6800,7 +6804,7 @@ function updateTadpoles(dt, t) {
 function tadToFrog(T, pi) {
   const p = pads[pi];
   const male = lifeRand() < 0.5;
-  const f = makeFrog({ male, green: T.green, size: 0.30, seed: T.seed * 3, id: T.id, born: T.born, dev: T.dev, energy: Math.max(T.energy, 0.5), tail: 1,
+  const f = makeFrog({ male, green: T.green, size: 0.30, seed: T.seed * 3, id: T.id, gen: T.gen, born: T.born, dev: T.dev, energy: Math.max(T.energy, 0.5), tail: 1,
     maxSize: male ? lr(1.0, 1.35) : lr(1.3, 2.0), life: LIFE.ADULT + lr(900, 2700), next: lr(30, 60), swimIn: lr(200, 400), fullT: 200, callT: 1e9 });
   if (!f) return null;
   const a = Math.atan2(T.z - p.z, T.x - p.x), c = Math.cos(p.rot), sn = Math.sin(p.rot), ux = Math.cos(a), uz = Math.sin(a);
@@ -6882,7 +6886,7 @@ function spawnSteer(f, dt) {
     // she waits there for the male (a while, at least); he stays by her until the eggs are out
     const mate = s.mate && s.mate.spawn && !s.mate.dying ? s.mate : null;
     if (s.male ? (s.t > 3 && (!mate || s.t > 20)) : (s.t > 4 && (!mate || Math.hypot(mate.pos.x - f.pos.x, mate.pos.z - f.pos.z) < 0.16 || s.t > 16))) {
-      if (!s.male) { layEggs(f.pos.x, f.pos.z, Math.round(lr(9, 15))); f.energy = Math.max(0.1, f.energy - 0.35); if (focus && focus.ref === f) focusNote('卵を産んだ'); }
+      if (!s.male) { layEggs(f.pos.x, f.pos.z, Math.round(lr(9, 15)), { gen: Math.max(f.gen, s.mate ? s.mate.gen : f.gen) + 1 }); f.energy = Math.max(0.1, f.energy - 0.35); if (focus && focus.ref === f) focusNote('卵を産んだ'); }
       f.spawn = null;
     }
     return 'hold';
@@ -6907,7 +6911,7 @@ function updateLife(dt, t) {
   for (let i = eggs.length - 1; i >= 0; i--) {
     const E = eggs[i];
     if (worldH - E.laid >= LIFE.EGG) {
-      for (const e of E.list) makeTadpole({ x: E.x + e[0], z: E.z + e[2], y: E.y + e[1], dev: 0, energy: 0.55, born: worldH });
+      for (const e of E.list) makeTadpole({ x: E.x + e[0], z: E.z + e[2], y: E.y + e[1], dev: 0, energy: 0.55, born: worldH, gen: E.gen });
       lifeStats.hatched += E.list.length;
       eggs.splice(i, 1);
     }
@@ -6947,7 +6951,7 @@ function lifePop() {
   lifeStats.pops++;
   for (let k = 0; k < 3; k++) {
     const [x, z] = shallowSpot();
-    layEggs(x, z, 13);
+    layEggs(x, z, 13, { gen: lifeGenMax + (k === 0 ? 1 : 0) });
     splash(x, 0.004, z, 4, 0.2, 0.002); addDrop(x, z, 0.03, -0.0008); SFX.plip(x, z, 0.8);
   }
 }
@@ -6956,7 +6960,7 @@ function lifeFresh() {
   worldH = 0; tadpoles.length = 0; eggs.length = 0; tfood.length = 0;
   for (const f of frogs.slice()) removeFrog(f);
   algaeReset();
-  lifeId = 1;
+  lifeId = 1; lifeGenMax = 1;
   // numbered group by group, so that following them in order of their numbers keeps to one place for a while
   const groups = [shallowSpot(), shallowSpot(), shallowSpot()];
   for (let i = 0; i < LIFE.START; i++) {
@@ -6972,10 +6976,10 @@ function lifeSave() {
   if (lifeOff || OPTS.capture) return;
   try {
     const r = (v, k = 1000) => Math.round(v * k) / k;
-    const data = { v: 1, t: r(worldH, 10), id: lifeId,
-      tads: tadpoles.filter((T) => T.st !== 'dead').map((T) => [T.id, r(T.born, 10), r(T.dev, 10), r(T.x), r(T.z), r(T.y), r(T.energy), r(T.health), T.green ? 1 : 0, r(T.seed)]),
-      frogs: frogs.filter((f) => !f.dying && f.state !== 'held').map((f) => [f.id, r(f.born, 10), r(f.dev, 10), f.male ? 1 : 0, f.green ? 1 : 0, r(f.size), r(f.maxSize), r(f.energy), r(f.health), r(f.life, 10), r(f.cool, 10), f.pad, r(f.lx), r(f.lz), r(f.yaw), r(f.mat.uniforms.uSeedF.value)]),
-      eggs: eggs.map((E) => [r(E.x), r(E.z), r(E.laid, 10), E.list.map((e) => e.map((v) => r(v, 10000)))]),
+    const data = { v: 2, t: r(worldH, 10), id: lifeId, gm: lifeGenMax,
+      tads: tadpoles.filter((T) => T.st !== 'dead').map((T) => [T.id, r(T.born, 10), r(T.dev, 10), r(T.x), r(T.z), r(T.y), r(T.energy), r(T.health), T.green ? 1 : 0, r(T.seed), T.gen]),
+      frogs: frogs.filter((f) => !f.dying && f.state !== 'held').map((f) => [f.id, r(f.born, 10), r(f.dev, 10), f.male ? 1 : 0, f.green ? 1 : 0, r(f.size), r(f.maxSize), r(f.energy), r(f.health), r(f.life, 10), r(f.cool, 10), f.pad, r(f.lx), r(f.lz), r(f.yaw), r(f.mat.uniforms.uSeedF.value), f.gen]),
+      eggs: eggs.map((E) => [r(E.x), r(E.z), r(E.laid, 10), E.list.map((e) => e.map((v) => r(v, 10000))), E.gen]),
       algae: Array.from(algae, (v) => Math.round(v * 255)) };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
   } catch (e) { /* storage not available here: the pond just starts fresh next time */ }
@@ -6983,21 +6987,21 @@ function lifeSave() {
 function lifeLoad() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (e) { d = null; }
-  if (!d || d.v !== 1) return false;
+  if (!d || (d.v !== 1 && d.v !== 2)) return false;
   try {
-    worldH = d.t; lifeId = d.id;
-    for (const a of d.tads) makeTadpole({ id: a[0], born: a[1], dev: a[2], x: a[3], z: a[4], y: a[5], energy: a[6], health: a[7], green: !!a[8] }).seed = a[9];
+    worldH = d.t; lifeId = d.id; lifeGenMax = d.gm ?? 1;
+    for (const a of d.tads) makeTadpole({ id: a[0], born: a[1], dev: a[2], x: a[3], z: a[4], y: a[5], energy: a[6], health: a[7], green: !!a[8], gen: a[10] ?? 1 }).seed = a[9];
     for (const a of d.frogs) {
       const pi = a[11] >= 0 && a[11] < NPAD && !padTaken(a[11]) ? a[11] : pads.findIndex((p, i) => i < NPAD && p.r > 0.09 && !padTaken(i));
       if (pi < 0) continue;
-      const f = makeFrog({ id: a[0], born: a[1], dev: a[2], male: !!a[3], green: !!a[4], size: a[5], maxSize: a[6], energy: a[7], health: a[8], life: a[9], cool: a[10], seed: a[15],
+      const f = makeFrog({ id: a[0], born: a[1], dev: a[2], male: !!a[3], green: !!a[4], size: a[5], maxSize: a[6], energy: a[7], health: a[8], life: a[9], cool: a[10], seed: a[15], gen: a[16] ?? 1,
         tail: 1 - smooth01(LIFE.CLIMB, LIFE.TAILGONE, a[2]) });
       if (!f) continue;
       f.pad = pi; f.lx = a[12]; f.lz = a[13]; f.yaw = a[14];
       if (f.male && f.dev < LIFE.ADULT) f.callT = 1e9;
       const p = pads[pi], [x, z] = frogPadWorld(p, f.lx, f.lz); f.pos.set(x, frogGroundY(p, x, z, 0), z); p.weight = 0.35;
     }
-    for (const a of d.eggs) eggs.push({ x: a[0], z: a[1], y: -0.012, laid: a[2], list: a[3] });
+    for (const a of d.eggs) eggs.push({ x: a[0], z: a[1], y: -0.012, laid: a[2], list: a[3], gen: a[4] ?? 1 });
     if (d.algae && d.algae.length === algae.length) for (let c = 0; c < algae.length; c++) algae[c] = d.algae[c] / 255;
     return true;
   } catch (e) { tadpoles.length = 0; eggs.length = 0; for (const f of frogs.slice()) removeFrog(f); return false; }
@@ -7045,7 +7049,7 @@ function focusCard(dt) {
   const o = focus.ref, isTad = focus.kind === 'tad';
   const name = isTad ? 'オタマジャクシ' : o.dev < LIFE.ADULT ? '子ガエル' : `アマガエル（${o.male ? 'オス' : 'メス'}）`;
   const len = isTad ? tadLen(o) * 100 : FROG_SCALE * o.size * 7.2;
-  $('fc-name').textContent = `${name}　No.${o.id}`;
+  $('fc-name').textContent = `${name}　No.${o.id}　第${o.gen || 1}世代`;
   $('fc-age').textContent = `生まれて ${ageText(worldH - o.born)}`;
   const parts = [stageText(o), `${isTad ? '全長' : '体長'} ${len.toFixed(1)}cm`, condText(o)].filter(Boolean);
   $('fc-info').textContent = fcNoteT > 0 && fcNote ? fcNote : parts.join('・');
@@ -7059,7 +7063,14 @@ function lifeTitle() {
   if (nt) bits.push(`オタマジャクシ${kanji(nt)}匹`);
   if (ne) bits.push(`卵${kanji(ne)}個`);
   if (heron.st !== 'away') bits.push('アオサギ一羽');
-  const s = bits.join('・'); if (el.textContent !== s) el.textContent = s;
+  // the newest generation in the pond
+  let gn = 0;
+  for (const f of frogs) if (!f.dying) gn = Math.max(gn, f.gen || 1);
+  for (const T of tadpoles) if (T.st !== 'dead') gn = Math.max(gn, T.gen || 1);
+  for (const E of eggs) gn = Math.max(gn, E.gen || 1);
+  if (gn) bits.push(`第${kanji(gn)}世代`);
+  // each item kept whole when the line wraps on a narrow screen
+  const s = bits.map((b) => `<span>${b}</span>`).join('・'); if (el.innerHTML !== s) el.innerHTML = s;
 }
 // everything the "カエル" view can follow, frogs and tadpoles together, in the order of their numbers (No.)
 function watchList() {
