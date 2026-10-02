@@ -70,6 +70,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 .panel .ops{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-3);line-height:1.7}
 .loading{position:fixed;inset:0;display:grid;place-items:center;background:var(--deep);color:var(--ink-2);font-family:var(--f-display);letter-spacing:.2em;font-size:15px;transition:opacity .9s}
 .loading.gone{opacity:0;pointer-events:none}
+.loading>div{text-align:center}
 .loading small{display:block;margin-top:10px;font-family:var(--f-ui);font-size:11px;letter-spacing:.12em;color:var(--ink-3);text-align:center}
 .loading .lbar{width:min(220px,60vw);height:3px;margin:16px auto 0;border-radius:2px;background:rgba(243,239,230,.14);overflow:hidden}
 .loading .lbar i{display:block;width:0;height:100%;border-radius:2px;background:var(--lotus);transition:width .25s ease-out}
@@ -97,7 +98,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
   <div class="grp zm"><span class="lbl">ズーム</span><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.6"/><path d="M10.2 10.2L14 14"/></svg><input id="zoom" type="range" min="0" max="1000" step="1" value="200" aria-label="ズーム（左で引き、右で寄り）"></div>
   <div class="grp"><span class="lbl">光</span>
     <div class="seg" role="group" aria-label="時間帯">
-      <button id="t-morning" type="button" aria-pressed="false">朝</button><button id="t-noon" type="button" aria-pressed="true">昼</button><button id="t-evening" type="button" aria-pressed="false">夕</button>
+      <button id="t-morning" type="button" aria-pressed="false">朝</button><button id="t-noon" type="button" aria-pressed="true">昼</button><button id="t-evening" type="button" aria-pressed="false">夕</button><button id="t-night" type="button" aria-pressed="false">夜</button><button id="t-live" type="button" aria-pressed="false" title="現在の時刻に合わせて光が移り変わります">現在</button>
     </div>
   </div>
   <div class="grp snd"><button id="snd-btn" type="button" aria-pressed="true" aria-label="音"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path class="spk" d="M3 7.5h3l4-3.5v12l-4-3.5H3z"/><path class="on" d="M13 7.2a4 4 0 0 1 0 5.6M15.2 5a7 7 0 0 1 0 10"/><path class="off" d="M13 7.5l5 5M18 7.5l-5 5"/></svg>音</button><input id="vol" type="range" min="0" max="100" step="1" value="70" aria-label="音量"></div>
@@ -116,7 +117,8 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
     <dt>鯉</dt><dd>頂点シェーダーで体をうねらせ、boids で群泳。紅白・大正三色・昭和三色・山吹黄金。落ちたばかりの葉には寄ってきて口でつつく</dd>
     <dt>アメンボ</dt><dd>ときどき岸の向こうから飛んできて水面に降り、しばらくするとまた飛び去る。長い中脚で水をかいて滑り、後脚でかじを取る。脚先が水面をくぼませ、そのくぼみがレンズになって、池の底に縁の明るい丸い影を落とす。カエルや鯉が動くと散るように逃げる</dd>
     <dt>カエルの狩り</dt><dd>近くを滑るアメンボに向き直り、届けば口を開けて舌で捕る。少し遠ければ滑っていく先を読んで飛びかかり、水に入って泳いで葉へ戻る。遠ければ近くの葉へ移り、泳いでいる途中で見つければ追いかける。逃げられることもある。捕まえると目玉を沈めて飲み込み、手で口に押し込む</dd>
-    <dt>睡蓮</dt><dd>朝は半開き、昼は全開、夕方には花びらを一枚ずつ立てて閉じる</dd>
+    <dt>睡蓮</dt><dd>朝は半開き、昼は全開、夕方には花びらを一枚ずつ立てて閉じ、夜は閉じたまま眠る（「睡る蓮」の名のとおり）</dd>
+    <dt>夜と現在</dt><dd>「夜」は月明かりの池。星が瞬き、雲はほのかに照らされ、石灯籠に火が入って足もとの草や石を暖かく照らす。小鳥は鳴きやみ、虫の声が増え、ときどき森でフクロウが鳴く。「現在」は端末の時計に合わせて、夜明け・朝・昼・夕焼け・夜へと光がゆっくり移り変わる（日の出と日の入りはその日の日付で北緯35度あたりとして計算）</dd>
     <dt>散り紅葉</dt><dd>色づいた木ほど葉を落とす。竹とんぼのような翼果は自転しながらまっすぐ落ちる。振り子のように揺れて舞い落ち、水面では波に揺られて流れ、岸や睡蓮の縁に寄り、水を吸うと沈んで底に積もる</dd>
     <dt>水草</dt><dd>池底のセキショウモ。帯状の葉が流れに揺れ、一枚ごとのばねで鯉に押し分けられては戻る</dd>
     <dt>浮草</dt><dd>風下の岸に寄ったウキクサ。鯉や泳ぐカエルが通ると道が開いてゆっくり閉じ、鯉がときどき浮いてきて食べる（食べた所はやがて元に戻る）。水面のさざ波を抑え、底に影を落とす</dd>
@@ -238,14 +240,19 @@ const G = {
   uRockN: { value: 0 },
   uTrees: { value: Array.from({ length: 9 }, () => new THREE.Vector2(99, 99)) },
   uShadowMap: { value: null }, uShadowMat: { value: new THREE.Matrix4() }, uShadowOn: { value: 0 }, uShadowTexel: { value: 1 / 2048 },
+  uNight: { value: 0 },                                  // 0 by day, 1 on a moonlit night (stars, dim clouds)
+  uLamp: { value: new THREE.Vector4(0, -10, 0, 0) },     // the stone lantern's light: position, strength (lit at dusk and at night)
 };
 
 // ---------------------------------------------------------------- light presets
 const LIGHTS = {
-  morning: { el: 21, az: -112, col: [1.0, 0.84, 0.66], I: 3.0, top: [0.30, 0.48, 0.80], hor: [0.86, 0.82, 0.78], exp: 1.05, fog: 0.016 },
-  noon: { el: 54, az: 118, col: [1.0, 0.965, 0.91], I: 3.1, top: [0.24, 0.44, 0.84], hor: [0.70, 0.79, 0.90], exp: 0.88, fog: 0.016 },
-  evening: { el: 12, az: 34, col: [1.0, 0.60, 0.32], I: 3.2, top: [0.17, 0.25, 0.50], hor: [0.98, 0.66, 0.46], exp: 1.18, fog: 0.011 },
+  morning: { el: 21, az: -112, col: [1.0, 0.84, 0.66], I: 3.0, top: [0.30, 0.48, 0.80], hor: [0.86, 0.82, 0.78], exp: 1.05, fog: 0.016, night: 0, lamp: 0, scat: 1 },
+  noon: { el: 54, az: 118, col: [1.0, 0.965, 0.91], I: 3.1, top: [0.24, 0.44, 0.84], hor: [0.70, 0.79, 0.90], exp: 0.88, fog: 0.016, night: 0, lamp: 0, scat: 1 },
+  evening: { el: 12, az: 34, col: [1.0, 0.60, 0.32], I: 3.2, top: [0.17, 0.25, 0.50], hor: [0.98, 0.66, 0.46], exp: 1.18, fog: 0.011, night: 0, lamp: 0.3, scat: 1 },
+  // a clear autumn night: the "sun" is the moon — cool and faint — under a deep blue sky full of stars; the lantern is lit
+  night: { el: 48, az: 0, col: [0.60, 0.70, 1.0], I: 0.42, top: [0.012, 0.020, 0.050], hor: [0.032, 0.046, 0.080], exp: 2.3, fog: 0.012, night: 1, lamp: 1, scat: 0.2 },
 };
+const LIGHT_KEYS = ['el', 'az', 'I', 'exp', 'fog', 'night', 'lamp', 'scat'];
 const lightCur = JSON.parse(JSON.stringify(LIGHTS.noon));
 let lightFrom = JSON.parse(JSON.stringify(LIGHTS.noon)), lightTo = LIGHTS.noon, lightT = 1, lightName = 'noon';
 let exposure = 1;
@@ -256,22 +263,67 @@ function applyLight(L) {
   G.uSkyTop.value.set(L.top[0], L.top[1], L.top[2]);
   G.uSkyHor.value.set(L.hor[0], L.hor[1], L.hor[2]);
   const lum = 0.42 * L.I * Math.max(Math.sin(el), 0.12) + 0.55;
-  G.uScat.value.set(0.010 * (0.6 + 0.4 * L.col[0]), 0.030 * L.col[1], 0.022 * L.col[2]).multiplyScalar(lum);
+  G.uScat.value.set(0.010 * (0.6 + 0.4 * L.col[0]), 0.030 * L.col[1], 0.022 * L.col[2]).multiplyScalar(lum * L.scat);
   G.uFogDen.value = L.fog;
+  G.uNight.value = L.night;
   exposure = L.exp;
 }
+function mixLight(out, A, B, k) {
+  for (const key of LIGHT_KEYS) out[key] = lerp(A[key], B[key], k);
+  for (const key of ['col', 'top', 'hor']) for (let i = 0; i < 3; i++) out[key][i] = lerp(A[key][i], B[key][i], k);
+  return out;
+}
+// "現在": the light follows the clock — night until dawn, morning light after sunrise, midday, the evening glow round
+// sunset, then night again. Sunrise and sunset are worked out for the date at about 35°N (the middle of Japan).
+let lightLive = false, liveHour = null;      // liveHour: a fixed hour for testing, else the real clock
+const liveTarget = JSON.parse(JSON.stringify(LIGHTS.noon));
+function clockHour() {
+  if (liveHour !== null) return liveHour;
+  const d = new Date(); return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+}
+function sunTimes(d = new Date()) {
+  const doy = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 864e5);
+  const decl = 23.44 * Math.PI / 180 * Math.sin(2 * Math.PI * (284 + doy) / 365), lat = 35.5 * Math.PI / 180;
+  const cosH = (Math.sin(-0.833 * Math.PI / 180) - Math.sin(lat) * Math.sin(decl)) / (Math.cos(lat) * Math.cos(decl));
+  const H = Math.acos(Math.max(-1, Math.min(1, cosH))) * 12 / Math.PI;   // half the day length, in hours
+  // solar noon on the clock: about 11:40 in Japan; elsewhere assume noon, an hour later in summer time
+  const y = d.getFullYear(), std = Math.max(new Date(y, 0, 1).getTimezoneOffset(), new Date(y, 6, 1).getTimezoneOffset());
+  const noon = d.getTimezoneOffset() === -540 ? 11.68 : 12 + (d.getTimezoneOffset() < std ? 1 : 0);
+  return [noon - H, noon + H];
+}
+// which two presets the hour falls between, and how far
+function liveBlend(h) {
+  const [sr, ss] = sunTimes();
+  const K = [[sr - 1.0, 'night'], [sr + 0.2, 'morning'], [sr + 2.6, 'morning'], [11.0, 'noon'], [14.4, 'noon'], [ss - 0.6, 'evening'], [ss + 0.2, 'evening'], [ss + 1.1, 'night']];
+  if (h < K[0][0] || h >= K[K.length - 1][0]) return ['night', 'night', 0];
+  for (let i = 0; i < K.length - 1; i++) if (h < K[i + 1][0]) return [K[i][1], K[i + 1][1], smooth(K[i][0], K[i + 1][0], h)];
+  return ['night', 'night', 0];
+}
+function liveLight() {
+  const [a, b, k] = liveBlend(clockHour());
+  mixLight(liveTarget, LIGHTS[a], LIGHTS[b], k);
+  return k < 0.5 ? a : b;
+}
 function stepLight(dt) {
+  if (lightLive) {
+    lightName = liveLight();
+    lightTo = liveTarget;
+    if (lightT < 1) lightT = Math.min(1, lightT + dt / 2.2);
+    mixLight(lightCur, lightFrom, liveTarget, smooth(0, 1, lightT));
+    applyLight(lightCur);
+    return;
+  }
   if (lightT >= 1) return;
   lightT = Math.min(1, lightT + dt / 2.2);
-  const k = smooth(0, 1, lightT);
-  for (const key of ['el', 'az', 'I', 'exp', 'fog']) lightCur[key] = lerp(lightFrom[key], lightTo[key], k);
-  for (const key of ['col', 'top', 'hor']) for (let i = 0; i < 3; i++) lightCur[key][i] = lerp(lightFrom[key][i], lightTo[key][i], k);
+  mixLight(lightCur, lightFrom, lightTo, smooth(0, 1, lightT));
   applyLight(lightCur);
 }
 function setLight(name, instant) {
-  lightFrom = JSON.parse(JSON.stringify(lightCur)); lightTo = LIGHTS[name]; lightT = instant ? 1 : 0; lightName = name;
-  if (instant && typeof FLOWER_CLOSE !== 'undefined') FLOWER_CLOSE.value = FLOWER_CLOSE_AT[name];
-  if (instant) { Object.assign(lightCur, JSON.parse(JSON.stringify(LIGHTS[name]))); applyLight(lightCur); }
+  lightLive = name === 'live';
+  lightFrom = JSON.parse(JSON.stringify(lightCur)); lightT = instant ? 1 : 0;
+  if (lightLive) { lightName = liveLight(); lightTo = liveTarget; } else { lightTo = LIGHTS[name]; lightName = name; }
+  if (instant && typeof FLOWER_CLOSE !== 'undefined') FLOWER_CLOSE.value = FLOWER_CLOSE_AT[lightName];
+  if (instant) { mixLight(lightCur, lightTo, lightTo, 0); applyLight(lightCur); }
 }
 applyLight(lightCur);
 
@@ -378,6 +430,8 @@ uniform vec3 uCamPos;
 uniform float uPass;
 uniform float uFogDen;
 uniform float uWindK;
+uniform float uNight;
+uniform vec4 uLamp;
 #define IS_REFR (abs(uPass - 2.0) < 0.5)
 #define IS_SHADOW (uPass > 2.5)
 float sat(float x){ return clamp(x, 0.0, 1.0); }
@@ -431,14 +485,15 @@ vec3 skyColor(vec3 d, float disk){
   vec3 col = mix(uSkyHor, uSkyTop, pow(sat(y), 0.45));
   col = mix(col, uSkyHor * 0.5 + vec3(0.02, 0.025, 0.02), sat(-y * 5.0));
   float sd = max(dot(d, uSunDir), 0.0);
-  col += uSunCol * (0.05 * pow(sd, 5.0) + 0.22 * pow(sd, 60.0));
+  col += uSunCol * (0.05 * (1.0 - 0.6 * uNight) * pow(sd, 5.0) + 0.22 * pow(sd, 60.0));
   if (y > 0.0) {
     vec2 cp = d.xz / (y + 0.10) * 0.8 + vec2(uTime * 0.004, uTime * 0.0016);
     float c = fbm(cp * 1.25);
     c = smoothstep(0.50, 0.82, c) * smoothstep(0.0, 0.22, y);
     float lum = max(max(uSunCol.r, uSunCol.g), 1e-3);
     vec3 cc = mix(uSkyHor * 1.08, (uSunCol / lum) * (0.95 + 0.35 * pow(sd, 3.0)), 0.6);
-    col = mix(col, cc, c * 0.85);
+    cc *= mix(1.0, 0.05, uNight);                        // by night the clouds are only faintly moonlit
+    col = mix(col, cc, c * mix(0.85, 0.6, uNight));
   }
   col += uSunCol * smoothstep(0.99955, 0.99985, sd) * 14.0 * disk;
   return col;
@@ -468,6 +523,12 @@ vec3 apparentPos(vec3 P){
 vec3 fogCol(){ return mix(uSkyHor, uSkyTop, 0.32) * 0.86; }
 vec3 fogLand(vec3 col, vec3 P){ float dist = length(P - cameraPosition); return mix(col, fogCol(), 1.0 - exp(-dist * uFogDen)); }
 float ggx(float NdH, float a){ float a2 = a * a; float d = NdH * NdH * (a2 - 1.0) + 1.0; return min(a2 / (PI * max(d * d, 1e-6)), 400.0); }
+// warm light from the candle in the stone lantern, falling off with distance (no shadows: it sits in an open fire box)
+vec3 lampLight(vec3 P, vec3 N){
+  if (uLamp.w <= 0.0) return vec3(0.0);
+  vec3 L = uLamp.xyz - P; float d2 = dot(L, L);
+  return vec3(1.0, 0.55, 0.22) * uLamp.w * 2.4 * (0.15 + 0.85 * max(dot(N, L * inversesqrt(d2)), 0.0)) / (1.0 + d2 * 9.0);
+}
 `;
 
 const GL_BUMP = /* glsl */`
@@ -641,7 +702,7 @@ vec3 shadeLand(vec3 P, vec3 N, vec3 alb, float rough, float ao, float vis, float
   vec3 bounce = vec3(0.06, 0.08, 0.03) * sat(-N.y + 0.3);
   vec3 H = normalize(uSunDir + V);
   float sp = ggx(max(dot(N, H), 0.0), rough) * spec / (4.0 * max(dot(N, V), 0.15));
-  vec3 col = alb * (uSunCol * ndl * vis + (skyAmb + bounce * uSunCol.g) * ao) + uSunCol * sp * ndl * vis;
+  vec3 col = alb * (uSunCol * ndl * vis + (skyAmb + bounce * uSunCol.g) * ao + lampLight(P, N)) + uSunCol * sp * ndl * vis;
   return fogLand(col, P);
 }
 `;
@@ -868,7 +929,20 @@ varying vec3 vW;
 void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`, /* glsl */`
 ${GL_COMMON}
 varying vec3 vW;
-void main(){ vec3 d = normalize(vW - cameraPosition); gl_FragColor = vec4(skyColor(d, uPass < 0.5 ? 1.0 : 0.0), 1.0); }`,
+// stars: one in a few hundred cells of a fine grid over the sky, twinkling, hidden by cloud and haze near the horizon
+vec3 stars(vec3 d){
+  if (uNight < 0.01 || d.y < 0.02) return vec3(0.0);
+  vec3 g = d * 260.0, cell = floor(g), f = fract(g) - 0.5;
+  float h = hash13(cell);
+  if (h < 0.993) return vec3(0.0);
+  float b = hash13(cell + 7.31), r = length(f - (vec3(hash13(cell + 1.7), hash13(cell + 2.9), hash13(cell + 4.1)) - 0.5) * 0.5);
+  float s = smoothstep(0.36, 0.0, r) * (0.3 + 2.0 * b * b * b) * (0.72 + 0.28 * sin(uTime * (1.5 + 4.0 * b) + h * 80.0));
+  vec2 cp = d.xz / (d.y + 0.10) * 0.8 + vec2(uTime * 0.004, uTime * 0.0016);
+  float cloud = smoothstep(0.50, 0.82, fbm(cp * 1.25)) * smoothstep(0.0, 0.22, d.y);
+  vec3 tint = mix(vec3(0.75, 0.82, 1.0), vec3(1.0, 0.9, 0.75), hash13(cell + 9.9));
+  return tint * s * 0.9 * uNight * (1.0 - cloud) * smoothstep(0.02, 0.25, d.y);
+}
+void main(){ vec3 d = normalize(vW - cameraPosition); gl_FragColor = vec4(skyColor(d, uPass < 0.5 ? 1.0 : 0.0) + stars(d), 1.0); }`,
 {}, { side: THREE.BackSide, depthWrite: false }));
 sky.renderOrder = -10; sky.frustumCulled = false;
 onLayers(sky, LAYER.MAIN, LAYER.REFL); scene.add(sky);
@@ -1203,6 +1277,7 @@ const rockGeo = (() => {
     for (let i = 0; i < gp.count; i++) { const wx = L.x + g0.x + gp.getX(i), wy = lg + 0.735 + gp.getY(i), wz = L.z + g0.z + gp.getZ(i); pos.push(wx, wy, wz); seeds.push(42); types.push(3); aos.push(1); }
     const gi = gpost.index.array; for (let i = 0; i < gi.length; i++) index.push(gi[i] + o); }
   addPrism(6, 0.10, 0.10, 0.65, 0.82, 4);
+  G.uLamp.value.set(L.x, lg + 0.735, L.z, 0);
   addPrism(6, 0.16, 0.15, 0.82, 0.85, 3);
   addPrism(6, 0.30, 0.05, 0.85, 1.00, 3);
   addPrism(12, 0.05, 0.035, 1.00, 1.04, 3);
@@ -1263,6 +1338,12 @@ void main(){
     h = fbm3(q * 14.0) * 0.004;
   } else {
     base = vec3(0.02, 0.018, 0.015);
+  }
+  if (vType > 3.5 && uLamp.w > 0.0 && !IS_REFR) {
+    // the lantern's fire box, glowing through its openings
+    float fl = 0.88 + 0.12 * vnoise(vec2(uTime * 6.0, 3.0));
+    gl_FragColor = vec4(fogLand(vec3(1.0, 0.58, 0.24) * uLamp.w * 1.25 * fl * (0.7 + 0.3 * smoothstep(0.66, 0.76, P.y - uLamp.y + 0.735)), P), 1.0);
+    return;
   }
   // lichen
   float li = smoothstep(0.62, 0.72, fbm3(q * 9.0 + 4.0));
@@ -1856,7 +1937,7 @@ void main(){
   if (dot(N, V) < 0.0) N = -N;
   float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
   float back = pow(sat(dot(-V, uSunDir)), 2.0);
-  vec3 col = alb * (uSunCol * (sat(dot(N, uSunDir)) + 0.6 * back) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55 * ao);
+  vec3 col = alb * (uSunCol * (sat(dot(N, uSunDir)) + 0.6 * back) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55 * ao + lampLight(vW, N));
   gl_FragColor = vec4(fogLand(col, vW), 1.0);
 }`, {}, { side: THREE.DoubleSide }));
 fernMesh.frustumCulled = false;
@@ -1904,7 +1985,7 @@ void main(){
   float petal = vC.a;
   float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
   float ndl = dot(N, uSunDir), back = pow(sat(dot(-V, uSunDir)), 2.0);
-  vec3 col = vC.rgb * (uSunCol * (sat(ndl) + petal * (0.35 * sat(-ndl) + 0.9 * back)) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.6 * ao);
+  vec3 col = vC.rgb * (uSunCol * (sat(ndl) + petal * (0.35 * sat(-ndl) + 0.9 * back)) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.6 * ao + lampLight(vW, N));
   vec3 H = normalize(uSunDir + V);
   col += uSunCol * ggx(max(dot(N, H), 0.0), 0.4) * 0.03 * vis * sat(ndl);
   gl_FragColor = vec4(fogLand(col, vW), 1.0);
@@ -1986,7 +2067,7 @@ void main(){
   if (dot(N, V) < 0.0) N = -N;
   float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
   float ndl = dot(N, uSunDir), back = pow(sat(dot(-V, uSunDir)), 2.0);
-  vec3 col = alb * (uSunCol * (sat(ndl) + trans * (0.4 * sat(-ndl) + 0.8 * back)) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55 * ao);
+  vec3 col = alb * (uSunCol * (sat(ndl) + trans * (0.4 * sat(-ndl) + 0.8 * back)) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55 * ao + lampLight(vW, N));
   vec3 H = normalize(uSunDir + V);
   col += uSunCol * ggx(max(dot(N, H), 0.0), rough) * spec * vis * sat(ndl);
   col += mix(skyColor(reflect(-V, N), 0.0), alb * 4.0, 0.3) * (0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0)) * spec * 0.35;
@@ -2801,15 +2882,15 @@ const FLOWER_DEF = [
   { colony: 0, kind: 'pink', size: 1.35, dx: 0.10, dz: -0.18 },
   { colony: 5, kind: 'white', size: 1.25, dx: -0.12, dz: 0.16 },
   { colony: 4, kind: 'rose', size: 1.2, dx: 0.05, dz: 0.12 },
-  { colony: 3, kind: 'bud', size: 1.25, dx: 0.16, dz: 0.05 },
-  { colony: 0, kind: 'bud2', size: 1.1, dx: -0.30, dz: 0.22 },
+  { colony: 3, kind: 'coral', size: 1.2, dx: 0.16, dz: 0.05 },
+  { colony: 0, kind: 'blush', size: 1.1, dx: -0.30, dz: 0.22 },
   { colony: 6, kind: 'pink', size: 1.3, dx: -0.15, dz: -0.10 },
   { colony: 7, kind: 'white', size: 1.3, dx: 0.12, dz: 0.14 },
   { colony: 7, kind: 'rose', size: 1.15, dx: -0.25, dz: -0.18 },
   { colony: 1, kind: 'white', size: 1.2, dx: 0.10, dz: 0.10 },
-  { colony: 8, kind: 'bud', size: 1.2, dx: 0.08, dz: -0.12 },
+  { colony: 8, kind: 'coral', size: 1.15, dx: 0.08, dz: -0.12 },
   { colony: 9, kind: 'pink', size: 1.2, dx: 0.0, dz: 0.10 },
-  { colony: 6, kind: 'bud2', size: 1.1, dx: 0.28, dz: 0.20 },
+  { colony: 6, kind: 'blush', size: 1.1, dx: 0.28, dz: 0.20 },
 ];
 function buildFlowerGeometry(kind, size) {
   const pos = [], nor = [], at = [], idx = [], el = [];
@@ -2874,11 +2955,12 @@ function buildFlowerGeometry(kind, size) {
   return g;
 }
 // water lilies open through the morning, are wide open at midday and fold shut towards evening
-const FLOWER_CLOSE_AT = { morning: 0.35, noon: 0.0, evening: 0.92 };
+const FLOWER_CLOSE_AT = { morning: 0.35, noon: 0.0, evening: 0.92, night: 1.0 };
 const FLOWER_CLOSE = { value: 0 };
 const FLOWER_COL = {
   pink: [[1.0, 0.88, 0.90], [0.88, 0.33, 0.52]], white: [[0.98, 0.97, 0.90], [0.96, 0.93, 0.86]],
-  rose: [[0.98, 0.70, 0.78], [0.80, 0.18, 0.40]], bud: [[0.95, 0.70, 0.78], [0.86, 0.36, 0.52]], bud2: [[0.97, 0.94, 0.88], [0.96, 0.80, 0.84]],
+  rose: [[0.98, 0.70, 0.78], [0.80, 0.18, 0.40]], coral: [[0.98, 0.80, 0.82], [0.88, 0.40, 0.48]], blush: [[0.99, 0.96, 0.92], [0.95, 0.72, 0.80]],
+  bud: [[0.95, 0.70, 0.78], [0.86, 0.36, 0.52]], bud2: [[0.97, 0.94, 0.88], [0.96, 0.80, 0.84]],
 };
 const flowerMatFor = (kind) => smat(/* glsl */`
 ${GL_COMMON}
@@ -4518,7 +4600,7 @@ void main(){
 dofMat.fragmentShader = 'float sat(float x){ return clamp(x, 0.0, 1.0); }\n' + dofMat.fragmentShader;
 const finalMat = fsMat(/* glsl */`
 uniform sampler2D uTex; uniform sampler2D uBloom; uniform float uExposure; uniform float uTime; uniform vec2 uRes;
-uniform sampler2D uDbg; uniform float uDbgOn; uniform float uDbgScale;
+uniform sampler2D uDbg; uniform float uDbgOn; uniform float uDbgScale; uniform float uNight;
 uniform sampler2D uDof; uniform float uDofOn;
 varying vec2 vUv;
 vec3 aces(vec3 x){ const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14; return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0); }
@@ -4531,13 +4613,18 @@ void main(){
   if (uDofOn > 0.5) { vec4 dof = texture(uDof, vUv); c = mix(c, dof.rgb, smoothstep(0.07, 0.3, dof.a)); }
   c += texture(uBloom, vUv).rgb * 0.07;
   c *= uExposure;
+  if (uNight > 0.0) {
+    // moonlight vision: dim light loses its colour and drifts blue, while the lantern's bright warm light keeps it
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(c, l * vec3(0.70, 0.86, 1.22), uNight * 0.62 * (1.0 - smoothstep(0.18, 0.9, l)));
+  }
   c = aces(c);
   vec2 q = vUv - 0.5;
-  c *= 1.0 - 0.28 * dot(q, q) * 1.6;
+  c *= 1.0 - 0.28 * dot(q, q) * (1.6 + 1.4 * uNight);
   c = pow(c, vec3(1.0 / 2.2));
   c += (h12(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5) / 255.0 * 1.5;
   gl_FragColor = vec4(c, 1.0);
-}`, { uTex: { value: null }, uBloom: { value: null }, uExposure: { value: 1 }, uTime: G.uTime, uRes: { value: new THREE.Vector2() }, uDbg: { value: null }, uDbgOn: { value: 0 }, uDbgScale: { value: 1 }, uDof: { value: null }, uDofOn: { value: 0 } });
+}`, { uTex: { value: null }, uBloom: { value: null }, uExposure: { value: 1 }, uTime: G.uTime, uRes: { value: new THREE.Vector2() }, uDbg: { value: null }, uDbgOn: { value: 0 }, uDbgScale: { value: 1 }, uDof: { value: null }, uDofOn: { value: 0 }, uNight: G.uNight });
 
 function allocTargets() {
   const W = renderer.domElement.width, H = renderer.domElement.height;
@@ -5249,7 +5336,7 @@ function updateFrog(f, dt, t) {
       const P = 0.34, ph = f.callPh % P;
       f.sac = ph < 0.13 ? smooth(0, 0.13, ph) : 1 - smooth(0.13, 0.30, ph);
       if (f.callK < f.callN && f.callPh >= f.callK * P + 0.03) { f.callK++; SFX.croak(f); }
-      if (f.callPh >= P * f.callN) { f.callN = 0; f.callT = rr(10, 24) * (lightName === 'evening' ? 0.55 : lightName === 'morning' ? 1.3 : 1); f.sac = 0; }
+      if (f.callPh >= P * f.callN) { f.callN = 0; f.callT = rr(10, 24) * (lightName === 'evening' || lightName === 'night' ? 0.55 : lightName === 'morning' ? 1.3 : 1); f.sac = 0; }
     } else f.sac = lerp(f.sac, 0, 1 - Math.exp(-dt * 10));
   } else { f.callN = 0; f.sac = lerp(f.sac, 0, 1 - Math.exp(-dt * 12)); }
   f.throat = (f.callN > 0 ? 0 : Math.max(0, Math.sin(t * f.throatW + f.i))) * 0.9 * (f.state === 'sit' ? 1 : 0.2);
@@ -6632,6 +6719,8 @@ let simAcc = 0;
 function update(dt) {
   const t = (G.uTime.value += dt);
   stepLight(dt);
+  // the lantern's candle: a gentle, uneven flicker
+  G.uLamp.value.w = lightCur.lamp * (0.93 + 0.05 * Math.sin(t * 9.3) * Math.sin(t * 3.1 + 1.7) + 0.02 * Math.sin(t * 23.0));
   updateCamera(dt);
   updatePads(dt, t);
   updateKoi(dt, t);
@@ -6992,6 +7081,25 @@ const BIRDS = {
     const n = 5 + Math.floor(rnd() * 4);
     for (let i = 0; i < n; i++) { sTone(d, t, 0.045, 4300, 2900, 0.26, 'buzz', 0.004); t += 0.068; }
   },
+  // フクロウ (Ural owl), at night, from the woods: a soft, low "hoo… hoo", often followed by a quick "goro-suke hoo-hoo"
+  owl() {
+    const [x, y, z] = birdSpot(); const d = sndAt(x, y + 1.5, z, 0.6, 0.7, 5); if (!d) return; const c = SND.ctx; let t = sNow();
+    const k = rr(0.94, 1.06);
+    const hoot = (dur, f0, f1, a) => {
+      const o = c.createOscillator(), g = c.createGain(), o2 = c.createOscillator(), g2 = c.createGain();
+      o.frequency.setValueAtTime(f0 * k, t); o.frequency.linearRampToValueAtTime(f1 * k, t + dur);
+      o2.frequency.setValueAtTime(f0 * 2 * k, t); o2.frequency.linearRampToValueAtTime(f1 * 2 * k, t + dur);
+      const att = Math.min(0.07, dur * 0.35);
+      for (const [gg, aa] of [[g, a], [g2, a * 0.07]]) { gg.gain.setValueAtTime(0, t); gg.gain.linearRampToValueAtTime(aa, t + att); gg.gain.setValueAtTime(aa, t + dur - att); gg.gain.linearRampToValueAtTime(0, t + dur); }
+      o.connect(g); g.connect(d); o2.connect(g2); g2.connect(d);
+      o.start(t); o.stop(t + dur + 0.02); o2.start(t); o2.stop(t + dur + 0.02);
+      sNoise(d, t, dur, 'bandpass', f0 * k, 3, a * 0.05, att, 'pink');      // a little breath in it
+      t += dur;
+    };
+    hoot(0.45, 385, 355, 0.42); t += 0.6;
+    hoot(0.32, 395, 370, 0.38);
+    if (rnd() < 0.7) { t += 0.28; hoot(0.11, 420, 405, 0.28); t += 0.04; hoot(0.11, 412, 395, 0.26); t += 0.1; hoot(0.40, 392, 358, 0.4); t += 0.18; hoot(0.30, 388, 352, 0.36); }
+  },
   // メジロ (white-eye): thin "chii" contact calls from the leaves
   whiteeye() {
     const [x, y, z] = birdSpot(); const d = sndAt(x, y, z, 0.24, 0.35, 1.5); if (!d) return; let t = sNow();
@@ -7061,8 +7169,9 @@ function sndUpdate(dt) {
   sndT.rustle -= dt;
   if (sndT.rustle <= 0) { sndT.rustle = rr(0.07, 0.16); A.rg.gain.setTargetAtTime((0.0012 + 0.016 * Math.pow(wk, 1.5)) * prox * rr(0.55, 1.35), now, 0.06); }
   // time of day: birds most in the morning, insects in the evening
-  const birdW = lightName === 'morning' ? 1.0 : lightName === 'noon' ? 0.6 : 0.25;
-  const bugW = lightName === 'evening' ? 1.0 : lightName === 'noon' ? 0.35 : 0.15;
+  const birdW = lightName === 'morning' ? 1.0 : lightName === 'noon' ? 0.6 : lightName === 'night' ? 0 : 0.25;
+  const bugW = lightName === 'evening' ? 1.0 : lightName === 'night' ? 1.15 : lightName === 'noon' ? 0.35 : 0.15;
+  if (lightName === 'night') { sndT.owl = (sndT.owl ?? rr(6, 20)) - dt; if (sndT.owl <= 0) { BIRDS.owl(); sndT.owl = rr(40, 100); } }
   for (const k of ['bulbul', 'shrike', 'whiteeye']) {
     sndT[k] -= dt * birdW;
     if (sndT[k] <= 0) { BIRDS[k](); sndT[k] = k === 'bulbul' ? rr(18, 45) : k === 'shrike' ? rr(45, 110) : rr(3, 9); }
@@ -7179,9 +7288,18 @@ $('v-frog').onclick = () => {
   pressIn(['v-pond', 'v-frog', 'v-low'], 'v-frog'); setView('frog'); frogLabel();
 };
 $('v-low').onclick = () => { pressIn(['v-pond', 'v-frog', 'v-low'], 'v-low'); setView('low'); frogLabel(); };
-$('t-morning').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], 't-morning'); setLight('morning'); };
-$('t-noon').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], 't-noon'); setLight('noon'); };
-$('t-evening').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], 't-evening'); setLight('evening'); };
+const T_IDS = ['t-morning', 't-noon', 't-evening', 't-night', 't-live'];
+function liveLabel() {
+  const b = $('t-live');
+  if (!lightLive) { b.textContent = '現在'; return; }
+  const d = new Date(), h = liveHour !== null ? liveHour : d.getHours() + d.getMinutes() / 60;
+  const hh = Math.floor(h) % 24, mm = Math.floor((h - Math.floor(h)) * 60);
+  b.innerHTML = `現在<span class="cnt">${hh}:${String(mm).padStart(2, '0')}</span>`;
+}
+for (const [id, name] of [['t-morning', 'morning'], ['t-noon', 'noon'], ['t-evening', 'evening'], ['t-night', 'night'], ['t-live', 'live']]) {
+  $(id).onclick = () => { pressIn(T_IDS, id); setLight(name); liveLabel(); };
+}
+setInterval(liveLabel, 15000);
 $('snd-btn').onclick = () => sndSet(!SND.on);
 { const vol = $('vol'); vol.value = String(Math.round(SND.vol * 100)); vol.addEventListener('input', () => sndVolume(vol.value / 100)); }
 { const z = $('zoom');
@@ -7375,7 +7493,8 @@ API.uniformReport = () => {
 API.project = (x, y, z) => { const v = V3(x, y, z).project(camera); return [Math.round((v.x + 1) / 2 * innerWidth), Math.round((1 - v.y) / 2 * innerHeight)]; };
 API.cmd = (name, ...a) => {
   if (name === 'view') { setView(a[0], !!a[1]); return view; }
-  if (name === 'light') { setLight(a[0], !!a[1]); return a[0]; }
+  if (name === 'light') { setLight(a[0], !!a[1]); pressIn(T_IDS, 't-' + a[0]); liveLabel(); return a[0]; }
+  if (name === 'clock') { liveHour = a[0] ?? null; liveLabel(); return liveBlend(clockHour()); }
   if (name === 'feed') { feed(a[0], a[1]); return food.length; }
   if (name === 'jump') { frog.next = frog.t; return frog.state; }
   if (name === 'cam') { Object.assign(camGoal, a[0]); if (a[1]) Object.assign(cam, camGoal); return cam; }
