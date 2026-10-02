@@ -7024,12 +7024,15 @@ function condText(o) {
   return '元気';
 }
 let fcNote = null, fcNoteT = 0, fcT = 0;
+// the name card can be switched off from the menu (remembered in this browser)
+let cardOn = true;
+try { cardOn = localStorage.getItem('pond-card') !== 'off'; } catch (e) { /* storage blocked: default on */ }
 function focusNote(text) { fcNote = text; fcNoteT = 4.5; }
 function focusLater(old) { setTimeout(() => { if (focus && focus.ref === old) focusLost(old); }, 4000); }
 function focusCard(dt) {
   const el = $('fcard'); if (!el) return;
   fcNoteT -= dt;
-  const show = view === 'frog' && focus && !OPTS.capture;
+  const show = cardOn && view === 'frog' && focus && !OPTS.capture;
   if (!show) { if (!el.hidden) el.hidden = true; return; }
   if ((fcT -= dt) > 0) return; fcT = 0.25;
   const o = focus.ref, isTad = focus.kind === 'tad';
@@ -8092,6 +8095,32 @@ $('v-frog').onclick = () => {
   setFocus(list[k][0], list[k][1]);
   pressIn(['v-pond', 'v-frog', 'v-low'], 'v-frog'); setView('frog'); frogLabel();
 };
+{ const b = $('card-btn');
+  const sync = () => { b.setAttribute('aria-pressed', String(cardOn)); b.title = cardOn ? '名札を消す' : '名札を出す'; };
+  b.onclick = () => { cardOn = !cardOn; try { localStorage.setItem('pond-card', cardOn ? 'on' : 'off'); } catch (e) { /* not kept */ } sync(); fcT = 0; };
+  sync();
+}
+// reset: the pond's life starts over from forty tadpoles. The first press only arms it (the button asks to be pressed
+// again for three seconds), so that a stray tap does not wipe out the frogs
+{ const b = $('reset-btn'); let armed = 0, tm = 0;
+  const disarm = () => { clearTimeout(tm); armed = 0; b.classList.remove('confirm'); b.textContent = 'リセット'; };
+  b.onclick = () => {
+    if (!armed) { armed = 1; b.classList.add('confirm'); b.textContent = 'もう一度押す'; tm = setTimeout(disarm, 3000); return; }
+    disarm(); lifeReset();
+  };
+}
+function lifeReset() {
+  const watching = view === 'frog';
+  lifeOff = false;
+  for (const k in lifeStats) lifeStats[k] = 0;
+  lifeFresh();
+  if (typeof heronGone === 'function') heronGone();
+  // whoever was being watched is gone: in the frog view, start again from No.1
+  const l = watchList();
+  if (watching && l.length) { setFocus(l[0][0], l[0][1]); pressIn(['v-pond', 'v-frog', 'v-low'], 'v-frog'); setView('frog'); }
+  else if (focus && !l.some(([, o]) => o === focus.ref)) setFocus(null, null);
+  lifeSave(); lifeTitle(); frogLabel();
+}
 // what a tap on the water drops: the koi's floating pellets, or flakes that sink for the tadpoles
 let feedMode = 'koi';
 for (const [id, mode] of [['f-koi', 'koi'], ['f-tad', 'tad']]) $(id).onclick = () => { feedMode = mode; pressIn(['f-koi', 'f-tad'], id); };

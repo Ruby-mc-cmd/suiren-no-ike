@@ -40,6 +40,9 @@ body{margin:0;background:var(--deep);color:var(--ink);font-family:var(--f-ui);ov
 .bar button:hover{color:var(--ink)}
 .seg button[aria-pressed="true"]{background:rgba(243,239,230,.15);color:var(--ink);box-shadow:inset 0 -2px 0 var(--lotus)}
 #info-btn[aria-expanded="true"]{color:var(--ink);background:rgba(243,239,230,.12)}
+#reset-btn.confirm{color:#fff;background:rgba(196,84,72,.55)}
+#card-btn[aria-pressed="true"]{color:var(--ink);background:rgba(243,239,230,.12)}
+#card-btn[aria-pressed="false"]{opacity:.6;text-decoration:line-through;text-decoration-thickness:1px}
 #snd-btn{display:flex;align-items:center;gap:5px}
 #snd-btn .ico{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 #snd-btn .spk{fill:currentColor;stroke:none}
@@ -60,7 +63,7 @@ body{margin:0;background:var(--deep);color:var(--ink);font-family:var(--f-ui);ov
 button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 .hint{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);font-size:12px;letter-spacing:.08em;color:var(--ink);background:var(--glass);border:1px solid var(--line);padding:8px 14px;border-radius:999px;white-space:nowrap;pointer-events:none;transition:opacity .8s;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
 .hint.gone{opacity:0}
-.fcard{position:fixed;left:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 16px);max-width:min(340px,calc(100% - 32px));box-sizing:border-box;padding:10px 14px 11px;border-radius:14px;background:var(--glass);border:1px solid var(--line);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);pointer-events:none;font-size:12px;line-height:1.6;letter-spacing:.04em;color:var(--ink-2)}
+.fcard{position:fixed;left:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 62px);max-width:min(340px,calc(100% - 32px));box-sizing:border-box;padding:10px 14px 11px;border-radius:14px;background:var(--glass);border:1px solid var(--line);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);pointer-events:none;font-size:12px;line-height:1.6;letter-spacing:.04em;color:var(--ink-2)}
 .fcard b{display:block;margin-bottom:2px;font-family:var(--f-display);font-weight:600;font-size:14px;letter-spacing:.1em;color:var(--ink)}
 .fcard span{display:block}
 #fc-age{color:var(--ink);font-variant-numeric:tabular-nums}
@@ -97,8 +100,9 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 <nav class="bar" aria-label="表示の切り替え">
   <div class="grp"><span class="lbl">視点</span>
     <div class="seg" role="group" aria-label="視点">
-      <button id="v-pond" type="button" aria-pressed="true">池</button><button id="v-frog" type="button" aria-pressed="false" title="押すたびに次のカエルへ">カエル</button><button id="v-low" type="button" aria-pressed="false">水面</button>
+      <button id="v-pond" type="button" aria-pressed="true">池</button><button id="v-frog" type="button" aria-pressed="false" title="押すたびに番号順に次の一匹へ">カエル</button><button id="v-low" type="button" aria-pressed="false">水面</button>
     </div>
+    <button id="card-btn" type="button" aria-pressed="true" title="追っているカエルやオタマジャクシの名札（生まれてからの日数など）を出す・消す">名札</button>
   </div>
   <div class="grp zm"><span class="lbl">ズーム</span><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.6"/><path d="M10.2 10.2L14 14"/></svg><input id="zoom" type="range" min="0" max="1000" step="1" value="200" aria-label="ズーム（左で引き、右で寄り）"></div>
   <div class="grp"><span class="lbl">光</span>
@@ -112,6 +116,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
     </div>
   </div>
   <div class="grp snd"><button id="snd-btn" type="button" aria-pressed="true" aria-label="音"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path class="spk" d="M3 7.5h3l4-3.5v12l-4-3.5H3z"/><path class="on" d="M13 7.2a4 4 0 0 1 0 5.6M15.2 5a7 7 0 0 1 0 10"/><path class="off" d="M13 7.5l5 5M18 7.5l-5 5"/></svg>音</button><input id="vol" type="range" min="0" max="100" step="1" value="70" aria-label="音量"></div>
+  <button id="reset-btn" type="button" title="池の生き物をオタマジャクシ40匹からやり直します（保存していた様子も消えます）">リセット</button>
   <button id="info-btn" type="button" aria-expanded="false" aria-controls="info">仕組み</button>
 </nav>
 <div class="grab" aria-hidden="true"></div>
@@ -140,10 +145,10 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
     <dt>ガマ</dt><dd>池の両端の浅瀬。茶色い穂の一部が熟して綿毛がはじけ、風、とくに突風が吹くと種が池の上を漂って水面に落ちる</dd>
     <dt>ススキ</dt><dd>対岸の株。穂は絹毛の房の集まりで、逆光（とくに夕方）で透けて光る。突風が来ると草も木もなびき、紅葉が一斉に散り、水面にさざ波が走る</dd>
     <dt>カエルの一生</dt><dd>池の中では1秒が1時間で、卵からおよそ50日（20分）で大人のカエルになる。卵は3日でふ化し、オタマジャクシは池の底の藻を食べて育ち、後ろ足、前足の順に生えて、26日ほどで睡蓮の葉に上がる。上がった子ガエルはしっぽが縮んで消えるまで何も食べず、そのあとアメンボを捕って大きくなり、大人になってもゆっくり育ち続ける。藻はゆっくりしか戻らないので取り合いになる。大きいものが先に食べ、飢えたものは弱ったものをかじり、死んだものはほかが食べ、深みへ出たものは鯉に食べられるので、カエルになれるのはほんの一部。葉の上がいっぱい（カエルが8匹）のときは、岸から池の外へ旅立っていく。大人のメスはオスと連れ立って浅瀬へ泳いで行き、卵を産む。寿命は一匹ずつ違い、アメンボが捕れなければ飢えても死ぬ。全部いなくなると、新しい卵がどこからか現れる。様子はこの端末のブラウザに保存され、次に開くと続きから始まる（閉じている間は進まない）</dd>
-    <dt>見守る</dt><dd>「カエル」で一匹を追っている間は、左下に名札が出る。生まれてからの日数と時間、育ち具合、体長、おなかの具合。メニューの「餌」を「オタマ」にして水面をタップすると、オタマジャクシの餌が沈んでいき、底に着くと近くのオタマジャクシが集まって食べる</dd>
+    <dt>見守る</dt><dd>「カエル」で一匹を追っている間は、左下に名札が出る（メニューの「名札」で出す・消すを切り替え）。生まれてからの日数と時間、育ち具合、体長、おなかの具合。メニューの「餌」を「オタマ」にして水面をタップすると、オタマジャクシの餌が沈んでいき、底に着くと近くのオタマジャクシが集まって食べる</dd>
     <dt>カエル</dt><dd>ニホンアマガエル（同時に最大8匹）を SDF レイマーチングで描画。ふつうは緑色で、まれに黄色の色素を持たない水色が生まれる。メスはオスより大きく育つ。指先の吸盤、目を通る黒い筋、鳴嚢を膨らませて鳴く様子、呼吸・まばたき・葉から葉への跳躍。ときどき水へ飛び込み、蹴り→滑走→脚の引き戻しの平泳ぎで別の葉まで泳いで這い上がる</dd>
   </dl>
-  <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒（メニューの「餌」で鯉の餌とオタマジャクシの餌を切り替え）、カエルをタップすると跳びます。「カエル」は押すたびに、カエルもオタマジャクシも番号（No.）の小さい順に次の一匹へ移ります。追っている間は、ほかのカエルやオタマジャクシをタップするとそちらを追います。</p>
+  <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒（メニューの「餌」で鯉の餌とオタマジャクシの餌を切り替え）、「リセット」を2回続けて押すと、池の生き物がオタマジャクシ40匹からやり直しになります。カエルをタップすると跳びます。「カエル」は押すたびに、カエルもオタマジャクシも番号（No.）の小さい順に次の一匹へ移ります。追っている間は、ほかのカエルやオタマジャクシをタップするとそちらを追います。</p>
 </aside>
 <div class="loading" id="loading"><div>池に水を張っています<small id="load-sub">シェーダーを準備中</small><div class="lbar" id="load-prog" role="progressbar" aria-label="シェーダーのコンパイル" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="load-bar"></i></div><small id="load-pct">0%</small></div></div>
 <script type="module">
@@ -7173,12 +7178,15 @@ function condText(o) {
   return '元気';
 }
 let fcNote = null, fcNoteT = 0, fcT = 0;
+// the name card can be switched off from the menu (remembered in this browser)
+let cardOn = true;
+try { cardOn = localStorage.getItem('pond-card') !== 'off'; } catch (e) { /* storage blocked: default on */ }
 function focusNote(text) { fcNote = text; fcNoteT = 4.5; }
 function focusLater(old) { setTimeout(() => { if (focus && focus.ref === old) focusLost(old); }, 4000); }
 function focusCard(dt) {
   const el = $('fcard'); if (!el) return;
   fcNoteT -= dt;
-  const show = view === 'frog' && focus && !OPTS.capture;
+  const show = cardOn && view === 'frog' && focus && !OPTS.capture;
   if (!show) { if (!el.hidden) el.hidden = true; return; }
   if ((fcT -= dt) > 0) return; fcT = 0.25;
   const o = focus.ref, isTad = focus.kind === 'tad';
@@ -8241,6 +8249,32 @@ $('v-frog').onclick = () => {
   setFocus(list[k][0], list[k][1]);
   pressIn(['v-pond', 'v-frog', 'v-low'], 'v-frog'); setView('frog'); frogLabel();
 };
+{ const b = $('card-btn');
+  const sync = () => { b.setAttribute('aria-pressed', String(cardOn)); b.title = cardOn ? '名札を消す' : '名札を出す'; };
+  b.onclick = () => { cardOn = !cardOn; try { localStorage.setItem('pond-card', cardOn ? 'on' : 'off'); } catch (e) { /* not kept */ } sync(); fcT = 0; };
+  sync();
+}
+// reset: the pond's life starts over from forty tadpoles. The first press only arms it (the button asks to be pressed
+// again for three seconds), so that a stray tap does not wipe out the frogs
+{ const b = $('reset-btn'); let armed = 0, tm = 0;
+  const disarm = () => { clearTimeout(tm); armed = 0; b.classList.remove('confirm'); b.textContent = 'リセット'; };
+  b.onclick = () => {
+    if (!armed) { armed = 1; b.classList.add('confirm'); b.textContent = 'もう一度押す'; tm = setTimeout(disarm, 3000); return; }
+    disarm(); lifeReset();
+  };
+}
+function lifeReset() {
+  const watching = view === 'frog';
+  lifeOff = false;
+  for (const k in lifeStats) lifeStats[k] = 0;
+  lifeFresh();
+  if (typeof heronGone === 'function') heronGone();
+  // whoever was being watched is gone: in the frog view, start again from No.1
+  const l = watchList();
+  if (watching && l.length) { setFocus(l[0][0], l[0][1]); pressIn(['v-pond', 'v-frog', 'v-low'], 'v-frog'); setView('frog'); }
+  else if (focus && !l.some(([, o]) => o === focus.ref)) setFocus(null, null);
+  lifeSave(); lifeTitle(); frogLabel();
+}
 // what a tap on the water drops: the koi's floating pellets, or flakes that sink for the tadpoles
 let feedMode = 'koi';
 for (const [id, mode] of [['f-koi', 'koi'], ['f-tad', 'tad']]) $(id).onclick = () => { feedMode = mode; pressIn(['f-koi', 'f-tad'], id); };
