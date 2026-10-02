@@ -6,7 +6,7 @@
 2. `python3 build.py` で `dist/pond.html` と `dist/index.html` を作る
 3. 確認する。ヘッドレスでの撮影は `test.py`、挙動の回帰テストは `python3 tests/run.py`
 4. アーティファクトを更新する：`dist/pond.html` を https://claude.ai/artifact/QLfVnz2GJokL2vQHqTXmDg に再公開する（バージョン番号は1つ上げる）
-5. **GitHub も毎回更新する**：`git commit` してから `git push origin main`。コミットメッセージは日本語で、`v番号: 変更内容` の形にする（例 `v39: カエルの泳ぐ音を水音に`）
+5. **GitHub も毎回更新する**：`git commit`、`git pull --rebase origin main`（ユーザーが GitHub 上で直接編集することがある）、`git push origin main` の順に行う。コミットメッセージは日本語で、`v番号: 変更内容` の形にする（例 `v39: カエルの泳ぐ音を水音に`）
 6. ユーザーへの報告は日本語で短く。ヘッドレス（SwiftShader）でしか確認していないことは正直に書く
 
 ## 気をつけること
