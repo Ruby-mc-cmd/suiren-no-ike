@@ -1,4 +1,5 @@
 (() => {
+  __pond.cmd('testfrogs');   // the five grown frogs, with the life cycle switched off
   const P = __pond, F = P.dbg.frogs, pads = P.dbg.pads;
   F.forEach((f, i) => f.swimIn = 0.5 + i * 3);
   const rec = F.map(() => ({ swims: [], cur: null }));

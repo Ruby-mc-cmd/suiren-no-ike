@@ -1,4 +1,5 @@
 (() => {
+  __pond.cmd('testfrogs');   // the five grown frogs, with the life cycle switched off
   const P = __pond, V = P.dbg_str(), F = V.frogs, st = V.strStats, K = P.dbg.koi;
   const fps = 30, N = fps * 60 * 12;
   let bad = 0, badS = 0, popSum = 0, popMax = 0, hunts = 0, longCrouch = 0, swimTO = 0, tongueStuck = 0;

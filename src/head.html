@@ -59,6 +59,10 @@ body{margin:0;background:var(--deep);color:var(--ink);font-family:var(--f-ui);ov
 button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 .hint{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);font-size:12px;letter-spacing:.08em;color:var(--ink);background:var(--glass);border:1px solid var(--line);padding:8px 14px;border-radius:999px;white-space:nowrap;pointer-events:none;transition:opacity .8s;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
 .hint.gone{opacity:0}
+.fcard{position:fixed;left:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 16px);max-width:min(340px,calc(100% - 32px));box-sizing:border-box;padding:10px 14px 11px;border-radius:14px;background:var(--glass);border:1px solid var(--line);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);pointer-events:none;font-size:12px;line-height:1.6;letter-spacing:.04em;color:var(--ink-2)}
+.fcard b{display:block;margin-bottom:2px;font-family:var(--f-display);font-weight:600;font-size:14px;letter-spacing:.1em;color:var(--ink)}
+.fcard span{display:block}
+#fc-age{color:var(--ink);font-variant-numeric:tabular-nums}
 .panel{position:fixed;right:16px;top:calc(env(safe-area-inset-top,0px) + var(--bar-h,48px) + 22px);width:min(360px,calc(100% - 32px));max-height:calc(100% - var(--bar-h,48px) - 44px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));overflow:auto;box-sizing:border-box;padding:18px 18px 14px;border-radius:16px;background:var(--glass-2);border:1px solid var(--line);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)}
 .panel h2{margin:0 0 4px;font-family:var(--f-display);font-weight:600;font-size:17px;letter-spacing:.12em}
 .panel .sub{margin:0 0 12px;font-size:12px;color:var(--ink-3);letter-spacing:.06em}
@@ -74,7 +78,7 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 .loading .lbar{width:min(220px,60vw);height:3px;margin:16px auto 0;border-radius:2px;background:rgba(243,239,230,.14);overflow:hidden}
 .loading .lbar i{display:block;width:0;height:100%;border-radius:2px;background:var(--lotus);transition:width .25s ease-out}
 #load-pct{margin-top:9px;font-variant-numeric:tabular-nums;letter-spacing:.08em;color:var(--ink-2)}
-.capture .title,.capture .bar,.capture .grab,.capture .hint,.capture .panel{display:none}
+.capture .title,.capture .bar,.capture .grab,.capture .hint,.capture .panel,.capture .fcard{display:none}
 @media (max-width:560px){
   .lbl{display:none}
   .bar{gap:6px;padding:5px}
@@ -86,7 +90,8 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
 </style>
 
 <canvas id="scene" tabindex="0" aria-label="鯉が泳ぎ、アマガエルが葉にとまる秋の睡蓮の池の3Dシーン。タップで餌、ドラッグで視点を回転"></canvas>
-<header class="title"><h1>睡蓮の池</h1><p>鯉十二尾・睡蓮・アマガエル五匹</p></header>
+<header class="title"><h1>睡蓮の池</h1><p>鯉十二尾・オタマジャクシ四十匹</p></header>
+<div class="fcard" id="fcard" hidden aria-live="polite"><b id="fc-name"></b><span id="fc-age"></span><span id="fc-info"></span></div>
 <div class="hint" id="hint">水面をタップすると餌が一粒ずつ落ちます</div>
 <nav class="bar" aria-label="表示の切り替え">
   <div class="grp"><span class="lbl">視点</span>
@@ -98,6 +103,11 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
   <div class="grp"><span class="lbl">光</span>
     <div class="seg" role="group" aria-label="時間帯">
       <button id="t-morning" type="button" aria-pressed="false">朝</button><button id="t-noon" type="button" aria-pressed="true">昼</button><button id="t-evening" type="button" aria-pressed="false">夕</button><button id="t-night" type="button" aria-pressed="false">夜</button><button id="t-live" type="button" aria-pressed="false" title="現在の時刻に合わせて光が移り変わります">現在</button>
+    </div>
+  </div>
+  <div class="grp"><span class="lbl">餌</span>
+    <div class="seg" role="group" aria-label="餌">
+      <button id="f-koi" type="button" aria-pressed="true" title="水面に浮く鯉の餌">鯉</button><button id="f-tad" type="button" aria-pressed="false" title="底に沈むオタマジャクシの餌">オタマ</button>
     </div>
   </div>
   <div class="grp snd"><button id="snd-btn" type="button" aria-pressed="true" aria-label="音"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path class="spk" d="M3 7.5h3l4-3.5v12l-4-3.5H3z"/><path class="on" d="M13 7.2a4 4 0 0 1 0 5.6M15.2 5a7 7 0 0 1 0 10"/><path class="off" d="M13 7.5l5 5M18 7.5l-5 5"/></svg>音</button><input id="vol" type="range" min="0" max="100" step="1" value="70" aria-label="音量"></div>
@@ -128,8 +138,10 @@ button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
     <dt>音</dt><dd>音声ファイルは使わず Web Audio で合成。風と葉ずれ（突風でふくらむ）、水音、スズムシとエンマコオロギ（夕方に多い）、ヒヨドリ・モズの高鳴き・メジロ（朝に多い）、鳴嚢に合わせたカエルの声、餌の着水・鯉が食べる音・カエルの跳躍や着水、泳ぐときのちゃぷちゃぷという水音。カメラからの距離と左右で聞こえ方が変わる</dd>
     <dt>ガマ</dt><dd>池の両端の浅瀬。茶色い穂の一部が熟して綿毛がはじけ、風、とくに突風が吹くと種が池の上を漂って水面に落ちる</dd>
     <dt>ススキ</dt><dd>対岸の株。穂は絹毛の房の集まりで、逆光（とくに夕方）で透けて光る。突風が来ると草も木もなびき、紅葉が一斉に散り、水面にさざ波が走る</dd>
-    <dt>カエル</dt><dd>ニホンアマガエル五匹（普通の緑色が二匹、黄色の色素を持たない水色が三匹。うち二匹は1.5倍と2倍の大きなメス）を SDF レイマーチングで描画。指先の吸盤、目を通る黒い筋、鳴嚢を膨らませて鳴く様子、呼吸・まばたき・葉から葉への跳躍。ときどき水へ飛び込み、蹴り→滑走→脚の引き戻しの平泳ぎで別の葉まで泳いで這い上がる</dd>
+    <dt>カエルの一生</dt><dd>池の中では1秒が1時間で、卵からおよそ50日（20分）で大人のカエルになる。卵は3日でふ化し、オタマジャクシは池の底の藻を食べて育ち、後ろ足、前足の順に生えて、26日ほどで睡蓮の葉に上がる。上がった子ガエルはしっぽが縮んで消えるまで何も食べず、そのあとアメンボを捕って大きくなり、大人になってもゆっくり育ち続ける。藻はゆっくりしか戻らないので取り合いになる。大きいものが先に食べ、飢えたものは弱ったものをかじり、死んだものはほかが食べ、深みへ出たものは鯉に食べられるので、カエルになれるのはほんの一部。葉の上がいっぱい（カエルが8匹）のときは、岸から池の外へ旅立っていく。大人のメスはオスと連れ立って浅瀬へ泳いで行き、卵を産む。寿命は一匹ずつ違い、アメンボが捕れなければ飢えても死ぬ。全部いなくなると、新しい卵がどこからか現れる。様子はこの端末のブラウザに保存され、次に開くと続きから始まる（閉じている間は進まない）</dd>
+    <dt>見守る</dt><dd>「カエル」で一匹を追っている間は、左下に名札が出る。生まれてからの日数と時間、育ち具合、体長、おなかの具合。メニューの「餌」を「オタマ」にして水面をタップすると、オタマジャクシの餌が沈んでいき、底に着くと近くのオタマジャクシが集まって食べる</dd>
+    <dt>カエル</dt><dd>ニホンアマガエル（同時に最大8匹）を SDF レイマーチングで描画。ふつうは緑色で、まれに黄色の色素を持たない水色が生まれる。メスはオスより大きく育つ。指先の吸盤、目を通る黒い筋、鳴嚢を膨らませて鳴く様子、呼吸・まばたき・葉から葉への跳躍。ときどき水へ飛び込み、蹴り→滑走→脚の引き戻しの平泳ぎで別の葉まで泳いで這い上がる</dd>
   </dl>
-  <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒、カエルをタップすると跳びます。「カエル」は押すたびに次の一匹へ移ります。</p>
+  <p class="ops">メニューは画面の上端にカーソルを寄せると出ます（スマホはタップすると数秒間出ます）。ドラッグで回転、ピンチかホイール（またはメニューのズームのバー）で拡大・縮小。水面をタップすると餌を一粒（メニューの「餌」で鯉の餌とオタマジャクシの餌を切り替え）、カエルをタップすると跳びます。「カエル」は押すたびに次の一匹へ移り、カエルのあとはオタマジャクシを順に追います。追っている間は、ほかのカエルやオタマジャクシをタップするとそちらを追います。</p>
 </aside>
 <div class="loading" id="loading"><div>池に水を張っています<small id="load-sub">シェーダーを準備中</small><div class="lbar" id="load-prog" role="progressbar" aria-label="シェーダーのコンパイル" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="load-bar"></i></div><small id="load-pct">0%</small></div></div>

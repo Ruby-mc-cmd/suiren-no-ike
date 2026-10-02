@@ -66,6 +66,7 @@ const LAYER = { MAIN: 0, REFL: 1, REFR: 2, MASK: 3, SHADOW: 4 };
 const DOMAIN = { x: -5.0, z: -3.9, w: 11.6, h: 7.7 };
 
 // ---------------------------------------------------------------- global uniforms
+const FROG_MAX = 8;              // frogs alive at once (each is a raymarched mesh; the shading arrays have room for this many)
 const G = {
   uTime: { value: 0 },
   uSunDir: { value: V3(0, 1, 0) },
@@ -96,9 +97,9 @@ const G = {
   uStrT: { value: Array.from({ length: 12 }, () => new THREE.Vector4(99, 99, 99, 99)) },
   uRipA: { value: [0.0045, 0.0045, 0.0056, 0.0016, 0.0005] },
   uGw: { value: [new THREE.Vector4(0.86, -0.51, 1.7, 0.0026), new THREE.Vector4(0.62, -0.78, 1.05, 0.0017), new THREE.Vector4(0.97, -0.24, 0.72, 0.0011), new THREE.Vector4(0.45, -0.89, 0.48, 0.0007)] },
-  uFrogA: { value: Array.from({ length: 5 }, () => new THREE.Vector4(0, -10, 0, -1)) },
-  uFrogB: { value: Array.from({ length: 5 }, () => new THREE.Vector4(0.03, 0, 0, 0)) },
-  uFrogC: { value: Array.from({ length: 5 }, () => new THREE.Vector4(0, -10, 0, 0)) },
+  uFrogA: { value: Array.from({ length: FROG_MAX }, () => new THREE.Vector4(0, -10, 0, -1)) },
+  uFrogB: { value: Array.from({ length: FROG_MAX }, () => new THREE.Vector4(0.03, 0, 0, 0)) },
+  uFrogC: { value: Array.from({ length: FROG_MAX }, () => new THREE.Vector4(0, -10, 0, 0)) },
   uRock: { value: Array.from({ length: 96 }, () => new THREE.Vector4(99, 99, 0.01, 0)) },
   uRockN: { value: 0 },
   uTrees: { value: Array.from({ length: 9 }, () => new THREE.Vector2(99, 99)) },
@@ -1072,7 +1073,7 @@ function toIndexed(geo) {
   g.setIndex(idx);
   return g;
 }
-const ROCKS = [];
+const ROCKS = [], CAM_ROCKS = [];     // CAM_ROCKS: each bank rock's real reach and top, to keep the camera out
 const rockGeo = (() => {
   const base = toIndexed(new THREE.IcosahedronGeometry(1, 4));
   const bp = base.attributes.position; const bi = base.index.array;
@@ -1101,6 +1102,7 @@ const rockGeo = (() => {
     const c = Math.cos(r.rot), s = Math.sin(r.rot);
     const ground = terrainH(r.x, r.z);
     const cy = Math.max(ground, -0.07) + r.sy * 0.2;
+    let topY = -1e9, maxR = 0;
     for (let i = 0; i < bp.count; i++) {
       const dx = bp.getX(i), dy = bp.getY(i), dz = bp.getZ(i);
       let acc = Math.exp(-1.25 / 0.05);
@@ -1111,12 +1113,13 @@ const rockGeo = (() => {
       if (y < -0.25) y = -0.25 + (y + 0.25) * 0.3;
       const px = x * r.sx, py = y * r.sy, pz = z * r.sz;
       const wx = r.x + c * px - s * pz, wz = r.z + s * px + c * pz, wy = cy + py;
-      pos.push(wx, wy, wz);
+      pos.push(wx, wy, wz); topY = Math.max(topY, wy); maxR = Math.max(maxR, Math.hypot(wx - r.x, wz - r.z));
       seeds.push(r.seed); types.push(r.type);
       aos.push(smooth(-0.02, 0.5 * r.sy, wy - terrainH(wx, wz)));
     }
     for (let i = 0; i < bi.length; i++) index.push(bi[i] + o);
     if (ROCKS.length < 95) ROCKS.push([r.x, r.z, Math.max(r.sx, r.sz) * 0.95, cy + r.sy * 0.75]);
+    CAM_ROCKS.push([r.x, r.z, maxR, topY]);
   }
   // stone lantern (kasuga-doro) on the far bank
   const L = LANT;
@@ -1147,7 +1150,7 @@ const rockGeo = (() => {
   { const g = new THREE.SphereGeometry(0.048, 14, 10); const gp = g.attributes.position; const o = pos.length / 3;
     for (let i = 0; i < gp.count; i++) { const yy = gp.getY(i); pos.push(L.x + gp.getX(i), lg + 1.075 + yy * (yy > 0 ? 1.25 : 0.9), L.z + gp.getZ(i)); seeds.push(42); types.push(3); aos.push(1); }
     const gi = g.index.array; for (let i = 0; i < gi.length; i++) index.push(gi[i] + o); }
-  ROCKS.push([L.x, L.z, 0.2, lg + 0.9]);
+  ROCKS.push([L.x, L.z, 0.2, lg + 0.9]); CAM_ROCKS.push([L.x, L.z, 0.26, lg + 0.95]);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1));
@@ -2441,7 +2444,7 @@ padMaskGeo.setAttribute('iPos', padIPos); padMaskGeo.setAttribute('iData', padID
 padMaskGeo.instanceCount = NPAD;
 const PAD_VS_COMMON = /* glsl */`
 attribute vec2 aAux; attribute vec4 iPos; attribute vec4 iData; attribute vec4 iData2;
-uniform sampler2D uSurf; uniform vec4 uFrogA[5]; uniform vec4 uFrogB[5];
+uniform sampler2D uSurf; uniform vec4 uFrogA[${FROG_MAX}]; uniform vec4 uFrogB[${FROG_MAX}];
 vec3 padWorld(out vec2 local, out vec3 nrm){
   float R = iData.x; float c = cos(iPos.z), s = sin(iPos.z);
   vec2 lp = position.xz;
@@ -2457,7 +2460,7 @@ vec3 padWorld(out vec2 local, out vec3 nrm){
   float wgt = iData2.x;
   float y = sf.x * mix(0.85, 1.0, wgt) + 0.0038 + iPos.w + wave + curl + dome + lobe;
   // the leaf settles under each frog's feet
-  for (int i = 0; i < 5; i++){
+  for (int i = 0; i < ${FROG_MAX}; i++){
     vec4 fa = uFrogA[i];
     if (fa.w > -0.5 && abs(fa.w - iData2.y) < 0.5) {
       float fr = uFrogB[i].x;
@@ -2485,7 +2488,7 @@ void main(){
 }`, /* glsl */`
 ${GL_COMMON}
 ${GL_SHADOW}
-uniform vec4 uFrogA[5]; uniform vec4 uFrogB[5]; uniform vec4 uFrogC[5];
+uniform vec4 uFrogA[${FROG_MAX}]; uniform vec4 uFrogB[${FROG_MAX}]; uniform vec4 uFrogC[${FROG_MAX}];
 varying vec3 vW; varying vec3 vN; varying vec2 vLocal; varying vec4 vData; varying vec4 vData2; varying vec2 vAux; varying vec2 vCS;
 void main(){
   float r = vAux.x; float ang = vAux.y;
@@ -2550,7 +2553,7 @@ void main(){
   // frog shadow & contact occlusion
   float shadow = 1.0;
   float aoF = 1.0;
-  for (int i = 0; i < 5; i++){
+  for (int i = 0; i < ${FROG_MAX}; i++){
     vec4 fa = uFrogA[i]; vec4 fc = uFrogC[i]; float fr = uFrogB[i].x;
     float hgt = fc.y - vW.y;
     if (hgt < 0.0 || hgt > 0.3) continue;
@@ -3187,7 +3190,7 @@ void main(){
 }`, /* glsl */`
 ${GL_COMMON}
 ${GL_LAND}
-uniform vec4 uFrogA[5]; uniform vec4 uFrogB[5];
+uniform vec4 uFrogA[${FROG_MAX}]; uniform vec4 uFrogB[${FROG_MAX}];
 varying vec3 vW; varying vec3 vN; varying vec2 vP; varying vec4 vC; varying float vI;
 void main(){
   float r = vP.x, th = vP.y, age = vC.w, seed = vI * 7.31;
@@ -3212,7 +3215,7 @@ void main(){
   vec3 V = normalize(cameraPosition - vW);
   float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
   // frogs sitting on the leaf shade it
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < ${FROG_MAX}; i++) {
     vec4 fa = uFrogA[i];
     float hh = fa.y - vW.y;
     if (hh > -0.01 && hh < 0.12) vis *= 1.0 - 0.6 * (1.0 - smoothstep(0.4, 1.3, length(vW.xz - fa.xz) / max(uFrogB[i].x, 0.01)));
@@ -3809,7 +3812,7 @@ const FROG_GLSL = /* glsl */`
 uniform mat4 uFrogInv; uniform mat4 uFrogMat;
 uniform vec3 uBoxMin; uniform vec3 uBoxMax;
 uniform vec3 uBodyO; uniform float uPitch; uniform float uThroat; uniform float uBreath; uniform float uBlink; uniform float uSac; uniform float uSeedF;
-uniform float uMouth;
+uniform float uMouth; uniform float uTail; uniform float uFade; uniform float uJuv;
 uniform vec3 uJ[14]; uniform vec3 uToe[10]; uniform vec3 uFing[8]; uniform vec4 uLimbB[4];
 uniform int uSteps; uniform mat4 uProjM;
 float sdEll(vec3 p, vec3 r){ float k0 = length(p / r); float k1 = length(p / (r * r)); return k0 * (k0 - 1.0) / k1; }
@@ -3863,6 +3866,21 @@ float sdLid(vec3 qha){
 }
 const vec3 SAC_C = vec3(0.0335, -0.0088, 0.0);
 float sdSac(vec3 qh){ vec3 c = SAC_C + vec3(0.0025 * uSac, -0.0060 * uSac, 0.0); return length((qh - c) / vec3(1.0, 0.86, 1.04)) * 0.86 - (0.0030 + 0.0118 * uSac); }
+// what is left of the tadpole's tail on a froglet just out of the water: flattened side to side, tapering to a point,
+// trailing from the vent and lying along the leaf behind it, shrinking away as it is absorbed (uTail 1 -> 0).
+// Worked out in the frog's own upright frame (y = 0 is the ground), whatever the tilt of the body.
+float sdTail(vec3 q){
+  float c = cos(uPitch), s = sin(uPitch);
+  vec3 p = vec3(uBodyO.x + c * q.x - s * q.y, uBodyO.y + s * q.x + c * q.y, q.z);
+  vec2 v = vec2(-0.034, -0.002);
+  vec3 A = vec3(uBodyO.x + c * v.x - s * v.y, uBodyO.y + s * v.x + c * v.y, 0.0);
+  float L = 0.11 * uTail, w = 0.55 + 0.45 * uTail;
+  vec3 B = vec3(A.x - 0.30 * L - 0.004, max(mix(A.y, 0.0075, 0.7), 0.0075), 0.0), C = vec3(A.x - L - 0.006, 0.0105, 0.0);
+  vec3 pp = vec3(p.x, p.y, p.z * 1.8);
+  float d = sdRC(pp, A, B, 0.0088 * w, 0.0058 * w);
+  d = smin(d, sdRC(pp, B, C, 0.0058 * w, 0.0006), 0.004);
+  return d / 1.8;
+}
 float sdBodyRaw(vec3 q){
   float b = uBreath;
   // plump, rounded torso
@@ -3890,6 +3908,7 @@ float sdBodyRaw(vec3 q){
   d += 0.00040 * exp(-pow((qh.y - lipY) / 0.0006, 2.0)) * smoothstep(0.022, 0.028, qh.x) * smoothstep(0.004, 0.010, qha.z);
   // nostrils
   d += 0.00028 * (1.0 - smoothstep(0.0, 0.0009, length(qha - vec3(0.0560, 0.0072, 0.0046))));
+  if (uTail > 0.01) d = smin(d, sdTail(q), 0.008);
   return d;
 }
 // the mouth (only opened to feed): the lower jaw drops about its hinge at the corner of the mouth; everything below
@@ -4024,6 +4043,8 @@ float stripeY(float x){
   return mix(-0.0012, 0.0060, clamp((x - 0.004) / 0.0232, 0.0, 1.0));
 }
 void main(){
+  // a frog that has died fades away, pixel by pixel
+  if (uFade > 0.001 && hash12(floor(gl_FragCoord.xy)) < uFade) discard;
   vec3 ro = (uFrogInv * vec4(cameraPosition, 1.0)).xyz;
   vec3 rdw = normalize(vW - cameraPosition);
   vec3 rd = normalize((uFrogInv * vec4(rdw, 0.0)).xyz);
@@ -4089,6 +4110,8 @@ void main(){
   skin = mix(skin, uGreen > 0.5 ? vec3(0.20, 0.42, 0.05) : vec3(0.12, 0.45, 0.44), smoothstep(0.55, 0.85, vnoise3(q * 50.0 + 3.0 + uSeedF)) * 0.30);
   float speck = smoothstep(0.82, 0.88, vnoise3(q * 820.0 + uSeedF * 13.0));
   skin *= 1.0 - 0.45 * speck;
+  // a froglet is still dull and brownish; its colour clears as it grows
+  skin = mix(skin, skin * vec3(0.72, 0.66, 0.52) + vec3(0.035, 0.028, 0.008), uJuv);
   float bellyW = smoothstep(-0.28, -0.72, nb.y) * smoothstep(-0.001, -0.009, q.y);
   vec3 bel = vec3(0.80, 0.80, 0.76) * (0.9 + 0.14 * vnoise3(q * 700.0));
   if (mouthIn > 0.5) {
@@ -4205,6 +4228,7 @@ function makeFrogMesh(seed, male, green) {
     uFing: { value: Array.from({ length: 8 }, () => V3()) }, uLimbB: { value: Array.from({ length: 4 }, () => new THREE.Vector4()) },
     uSteps: { value: Q.steps }, uProjM: { value: new THREE.Matrix4() },
     uWaterY: { value: 0 }, uClipOn: { value: 0 }, uSwim: { value: 0 }, uMouth: { value: 0 },
+    uTail: { value: 0 }, uFade: { value: 0 }, uJuv: { value: 0 },
   }, { side: THREE.BackSide });
   const box = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
   box.matrixAutoUpdate = false; box.frustumCulled = false;
@@ -4226,22 +4250,58 @@ const EXT = {
   K: [-0.062, 0.012, 0.024], A: [-0.100, 0.006, 0.027], M: [-0.124, 0.003, 0.028],
   E: [0.034, 0.016, 0.026], W: [0.050, 0.012, 0.022],
 };
-const frogs = [0, 1, 2, 3, 4].map((i) => {
-  const male = i !== 1 && i !== 3;
-  const { mat, box } = makeFrogMesh(i * 0.37 + 0.11, male, i < 2);   // the first two are ordinary green ones
-  return {
-    i, mat, box, male, size: [1.0, 1.5, 1.07, 2.0, 1.03][i],   // two big females: the second is half again the size of the rest, the fourth twice
-    pad: -1, lx: 0, lz: 0, yaw: 0, state: 'sit', t: 0, next: [6.5, 11, 15.5, 8.5, 13][i], jump: null, jumpTo: -1, k: 0, kf: 0, crouch: 0,
-    breath: 0, throat: 0, blink: 0, blinkT: 1.5 + i * 1.3, blinkStart: undefined, pitchJ: 0, pos: V3(), world: new THREE.Matrix4(),
-    sac: 0, callT: 3.5 + i * 5.5, callN: 0, callPh: 0, breathW: [1.6, 1.85, 1.45, 1.7, 1.55][i], throatW: [9.0, 8.2, 9.6, 8.6, 9.3][i], turn: 0, swimIn: 14 + i * 7 + rnd() * 10, diving: false, swim: null, swimPlan: null, inWater: false,
+// The frogs come and go with the pond's life cycle. A fixed pool of meshes is made up front (so no shader is ever
+// compiled after loading); a slot is handed to each frog as it climbs out of the water and taken back when it dies.
+const frogPool = Array.from({ length: FROG_MAX }, (_, s) => {
+  const { mat, box } = makeFrogMesh(s * 0.37 + 0.11, true, true);
+  box.visible = false;
+  return { s, mat, box, used: false };
+});
+for (let i = 0; i < 5; i++) rnd();      // the five fixed frogs of earlier versions each drew a number here: the seeded layout stays as it was
+// the life cycle's own random stream (runtime only, so it can never disturb the layout)
+const lifeRand = (() => { let a = 0x51ed27a1; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
+const lr = (a, b) => a + (b - a) * lifeRand();
+const frogs = [];                        // the frogs alive now
+let frogSerial = 0, lifeId = 1;
+function makeFrog(o) {
+  const sl = frogPool.find((s) => !s.used); if (!sl) return null;
+  sl.used = true; sl.box.visible = true; sl.box.layers.disable(LAYER.REFR);
+  const u = sl.mat.uniforms;
+  u.uSeedF.value = o.seed ?? lr(0, 3); u.uMale.value = o.male ? 1 : 0; u.uGreen.value = o.green === false ? 0 : 1;
+  u.uTail.value = o.tail || 0; u.uFade.value = 0; u.uJuv.value = 0; u.uMouth.value = 0; u.uSac.value = 0;
+  const f = {
+    i: frogSerial++, slot: sl, mat: sl.mat, box: sl.box, male: !!o.male, green: o.green !== false, size: o.size,
+    pad: -1, lx: 0, lz: 0, yaw: 0, state: 'sit', t: 0, next: o.next ?? lr(5, 15), jump: null, jumpTo: -1, k: 0, kf: 0, crouch: 0,
+    breath: 0, throat: 0, blink: 0, blinkT: o.blinkT ?? lr(1, 6), blinkStart: undefined, pitchJ: 0, pos: V3(), world: new THREE.Matrix4(),
+    sac: 0, callT: o.callT ?? lr(4, 28), callN: 0, callPh: 0, breathW: o.breathW ?? lr(1.45, 1.85), throatW: o.throatW ?? lr(8.2, 9.6), turn: 0,
+    swimIn: o.swimIn ?? lr(30, 90), diving: false, swim: null, swimPlan: null, inWater: false,
     sw: 0, sk: 0, swPitch: 0, armL: 0, armR: 0, spread: 0.1,
     // feeding
-    prey: null, huntT: 0, huntCool: 0, approachCool: 0, fullT: 4 + i * 3, tongue: null, swallow: 0, gulped: false, mouth: 0, wipe: 0, wipePh: 0, wipeSide: 1,
+    prey: null, huntT: 0, huntCool: 0, approachCool: 0, fullT: o.fullT ?? lr(2, 10), tongue: null, swallow: 0, gulped: false, mouth: 0, wipe: 0, wipePh: 0, wipeSide: 1,
     hunt: null, chase: null, chaseT: 0, chaseCool: 0, edgeCool: 0, mouthW: V3(), bodyO: [0, 0.0192, 0], pitchB: 0.34,
+    // life: id, hour of birth (hatching), development (hours of growth), reserves, health, adult size, lifespan
+    id: o.id ?? lifeId++, born: o.born ?? 0, dev: o.dev ?? 1200, energy: o.energy ?? 0.8, health: o.health ?? 1,
+    maxSize: o.maxSize ?? o.size, life: o.life ?? Infinity, cool: o.cool ?? lr(60, 240), tail: o.tail ?? 0, dying: 0, cause: null, spawn: null,
   };
-});
-let focusIdx = 0;
-let frog = frogs[0];
+  frogs.push(f);
+  return f;
+}
+function removeFrog(f) {
+  const k = frogs.indexOf(f); if (k < 0) return;
+  frogs.splice(k, 1);
+  f.slot.used = false; f.box.visible = false; f.box.layers.disable(LAYER.REFR);
+  if (typeof striders !== 'undefined') for (const S of striders) { if (S.hunter === f) S.hunter = null; if (S.eater === f || (S.st === 'tongue' && f.tongue && f.tongue.prey === S)) S.st = 'gone'; }
+  if (pads[f.pad] && !frogs.some((o) => o.pad === f.pad)) pads[f.pad].weight = 1;
+  if (focus && focus.ref === f) focusLost(f);
+}
+// what the "カエル" view is following: a frog or a tadpole
+let focus = null, frog = null;
+function setFocus(kind, ref) { focus = ref ? { kind, ref } : null; frog = kind === 'frog' ? ref : null; if (typeof frogLabel === 'function') frogLabel(); }
+function focusLost(old) {
+  // the one being watched has gone: follow another, or go back to the pond
+  const next = frogs.find((o) => o !== old) || (typeof tadpoles !== 'undefined' && tadpoles.find((o) => o !== old && o.st !== 'dead'));
+  if (next) setFocus(frogs.includes(next) ? 'frog' : 'tad', next); else { setFocus(null, null); if (view === 'frog') { setView('pond'); pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); } }
+}
 const tmpM = new THREE.Matrix4(), tmpM2 = new THREE.Matrix4(), tmpV = V3();
 function vlerp(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
 function chain(base, pts, lens) {
@@ -4344,7 +4404,8 @@ function frogPose(f) {
     const r = Math.hypot(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) / 2 + 0.009;
     u.uLimbB.value[i].set(c[0], c[1], c[2], r);
   }
-  const bmin = [bodyO[0] - 0.05, -0.002 - 0.006 * sw, -0.032], bmax = [bodyO[0] + 0.072, bodyO[1] + 0.046, 0.032];
+  const bmin = [bodyO[0] - 0.05 - 0.115 * f.tail, -0.002 - 0.006 * sw, -0.032], bmax = [bodyO[0] + 0.072, bodyO[1] + 0.046 + 0.01 * f.tail, 0.032];
+  u.uTail.value = f.tail;
   for (const [mn, mx] of lim) for (let c = 0; c < 3; c++) { bmin[c] = Math.min(bmin[c], mn[c] - 0.005); bmax[c] = Math.max(bmax[c], mx[c] + 0.005); }
   u.uBoxMin.value.set(...bmin); u.uBoxMax.value.set(...bmax);
   u.uBreath.value = f.breath; u.uThroat.value = f.throat; u.uBlink.value = f.blink; u.uSac.value = f.sac;
@@ -4650,10 +4711,17 @@ function setView(name, instant) {
     const halfW = portrait ? 3.3 : 6.1;
     const hfov = 2 * Math.atan(Math.tan(camGoal.fov * Math.PI / 360) * aspect);
     camGoal.dist = clamp(halfW / Math.tan(hfov / 2) * 0.92, 2.6, 15);
-  } else if (name === 'frog') {
+  } else if (name === 'frog' && frog) {
     const S = FROG_SCALE * frog.size;
-    Object.assign(camGoal, { el: 0.36, dist: (portrait ? 0.46 : 0.36) * S, fov: portrait ? 46 : 38, tx: frog.pos.x, ty: frog.pos.y + 0.03 * S, tz: frog.pos.z });
+    Object.assign(camGoal, { el: 0.36, dist: Math.max((portrait ? 0.46 : 0.36) * S, 0.085), fov: portrait ? 46 : 38, tx: frog.pos.x, ty: frog.pos.y + 0.03 * S, tz: frog.pos.z });
     camGoal.az = Math.atan2(Math.cos(frog.yaw + 0.55), Math.sin(frog.yaw + 0.55));
+  } else if (name === 'frog' && focus && focus.kind === 'tad') {
+    // looking down through the water at a tadpole
+    const T = focus.ref, L = tadLen(T);
+    Object.assign(camGoal, { el: 1.12, dist: clamp(L * 13, 0.12, 0.6), fov: clamp(5 + 600 * L, 11, 30) * (portrait ? 1.25 : 1), tx: T.x, ty: T.y / 1.333, tz: T.z });
+    camGoal.az = Math.atan2(Math.cos(T.yaw + 1.2), Math.sin(T.yaw + 1.2));
+  } else if (name === 'frog') {
+    view = 'pond'; return setView('pond', instant);
   } else if (name === 'low') {
     Object.assign(camGoal, { tx: 1.0, ty: 0.34, tz: -1.2, el: 0.02, dist: portrait ? 3.4 : 3.1, fov: portrait ? 56 : 48 });
   }
@@ -4668,9 +4736,26 @@ function syncZoomUI() {
   z.value = String(Math.round(clamp(Math.log(b / camGoal.dist) / Math.log(b / a), 0, 1) * 1000));
 }
 // camera target height for a frog: at the water it hugs the surface, up on a lotus leaf it follows the frog
+const TAD_CAM_H = 0.07;
+// does a bank rock stand between the target and the camera?
+function camBlocked(tx, ty, tz, cx, cy, cz) {
+  const dx = cx - tx, dz = cz - tz, L2 = dx * dx + dz * dz || 1e-9;
+  for (const r of CAM_ROCKS) {
+    const u = clamp(((r[0] - tx) * dx + (r[1] - tz) * dz) / L2, 0, 1);
+    const px = tx + dx * u, pz = tz + dz * u;
+    if (Math.hypot(px - r[0], pz - r[1]) < r[2] * 0.85 && ty + (cy - ty) * u < r[3]) return true;
+  }
+  return false;
+}
+let camLift = 0;
 const frogTY = (f) => f.pos.y - 0.45 * clamp(f.pos.y, -0.05, 0.02) + 0.03 * FROG_SCALE * f.size;
 function updateCamera(dt) {
-  if (view === 'frog') {
+  if (view === 'frog' && !frog && !(focus && focus.kind === 'tad')) { setView('pond'); pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); }
+  if (view === 'frog' && !frog) {
+    const T = focus.ref;
+    camGoal.tx = T.x; camGoal.ty = T.y / 1.333; camGoal.tz = T.z;
+    jumpBoost = lerp(jumpBoost, 0, 1 - Math.exp(-dt * 3));
+  } else if (view === 'frog') {
     const fp = frog.pos;
     const S = FROG_SCALE * frog.size;
     const jumping = frog.state === 'crouch' || frog.state === 'air';
@@ -4694,26 +4779,46 @@ function updateCamera(dt) {
   cam.az += wrapAngle(camGoal.az - cam.az) * k; cam.el = lerp(cam.el, camGoal.el, k);
   cam.dist = lerp(cam.dist, camGoal.dist, k); cam.fov = lerp(cam.fov, camGoal.fov, k);
   let distJ = cam.dist;
-  if (view === 'frog' && frog.jumpTo >= 0 && jumpBoost > 0.001) {
+  if (view === 'frog' && frog && frog.jumpTo >= 0 && jumpBoost > 0.001) {
     const tp = pads[frog.jumpTo];
     const jd = frog.jump && frog.jump.to === frog.jumpTo ? Math.hypot(frog.jump.ex - frog.jump.sx, frog.jump.ez - frog.jump.sz) : Math.hypot(tp.x - frog.pos.x, tp.z - frog.pos.z);
     const need = (0.62 * jd + 0.05) / (Math.tan(cam.fov * Math.PI / 360) * clamp(innerWidth / innerHeight, 0.6, 1.8));
     distJ = Math.max(cam.dist * 1.25, Math.min(need, 1.4));
   }
+  // following an animal by the bank: if a rock comes between it and the camera, swing round towards open water
+  if (view === 'frog' && dt > 0 && performance.now() - userTouched > 2500) {
+    const cx = cam.tx + Math.sin(cam.az) * Math.cos(cam.el) * cam.dist, cy = cam.ty + Math.sin(cam.el) * cam.dist, cz = cam.tz + Math.cos(cam.az) * Math.cos(cam.el) * cam.dist;
+    if (camBlocked(cam.tx, cam.ty, cam.tz, cx, cy, cz)) {
+      const [gx, gz] = pondGrad(cam.tx, cam.tz), azIn = Math.atan2(-gx, -gz);
+      camGoal.az += clamp(wrapAngle(azIn - camGoal.az), -1, 1) * Math.min(1, dt * 2.2);
+    }
+  }
   let az = cam.az, el = cam.el, dist = lerp(cam.dist, distJ, jumpBoost);
+  // watching a tadpole: stay above the water (the surface must not come inside the near plane)
+  if (view === 'frog' && !frog) dist = Math.max(dist, (TAD_CAM_H - cam.ty) / Math.max(Math.sin(el), 0.25));
+  // close views get a nearer near plane
+  const nearP = view === 'frog' ? 0.012 : 0.05;
+  if (camera.near !== nearP) { camera.near = nearP; waterMat.uniforms.uNear.value = nearP; }
   if (!OPTS.capture && !reduceMotion && view === 'pond' && performance.now() - userTouched > 9000) {
     const t = G.uTime.value;
     az += 0.05 * Math.sin(t * 0.045); el += 0.025 * Math.sin(t * 0.06 + 1.0);
   }
   camera.fov = cam.fov; camera.aspect = innerWidth / innerHeight;
   camera.position.set(cam.tx + Math.sin(az) * Math.cos(el) * dist, cam.ty + Math.sin(el) * dist, cam.tz + Math.cos(az) * Math.cos(el) * dist);
-  if (camera.position.y < 0.03) camera.position.y = 0.03;
+  // never inside the ground or a rock on the bank: rise smoothly over them
+  { const cx = camera.position.x, cz = camera.position.z; let minY = Math.max(0.03, terrainH(cx, cz) + 0.05);
+    for (const r of CAM_ROCKS) if (Math.abs(cx - r[0]) < r[2] + 0.06 && Math.hypot(cx - r[0], cz - r[1]) < r[2] + 0.06) minY = Math.max(minY, r[3] + 0.06);
+    const need = Math.max(0, minY - camera.position.y);
+    camLift = need >= camLift || !(dt > 0) ? need : camLift + (need - camLift) * (1 - Math.exp(-dt * 3));
+    camera.position.y += camLift; }
   camera.lookAt(cam.tx, cam.ty, cam.tz);
   camera.updateProjectionMatrix(); camera.updateMatrixWorld();
   G.uCamPos.value.copy(camera.position);
   camera.getWorldDirection(waterMat.uniforms.uCamFwd.value);
   const fwd = waterMat.uniforms.uCamFwd.value;
-  if (view === 'frog') { const fp = tmpV.set(frog.pos.x, frog.pos.y + 0.022 * FROG_SCALE * frog.size, frog.pos.z).sub(camera.position); dof.focus = Math.max(fp.dot(fwd), 0.05); dof.apGoal = 0.8; }
+  if (view === 'frog' && frog) { const fp = tmpV.set(frog.pos.x, frog.pos.y + 0.022 * FROG_SCALE * frog.size, frog.pos.z).sub(camera.position); dof.focus = Math.max(fp.dot(fwd), 0.05); dof.apGoal = 0.8; }
+  // a tadpole is seen on the water's surface (that is where the depth buffer has it), so focus there
+  else if (view === 'frog') { dof.focus = Math.max(camera.position.y / Math.max(-fwd.y, 0.2), 0.05); dof.apGoal = 0.45; }
   else if (view === 'low') { dof.focus = Math.max(tmpV.set(cam.tx, cam.ty, cam.tz).sub(camera.position).dot(fwd), 0.5) * 1.1; dof.apGoal = 0.3; }
   else dof.apGoal = 0;
 }
@@ -4800,9 +4905,21 @@ function tap(cx, cy) {
     const tol = Math.max(0.035 * S / 0.55, along * 0.022);
     if (perp < tol && perp < bestP) { bestP = perp; hitF = f; }
   }
-  if (hitF) { if (hitF.state === 'sit') hitF.next = hitF.t; else if (hitF.state === 'swim') hitF.swim.force = true; hideHint(); return; }
+  if (hitF && view === 'frog' && hitF !== frog && !hitF.dying) { setFocus('frog', hitF); setView('frog'); return; }
+  if (hitF && !hitF.dying) { if (hitF.state === 'sit') hitF.next = hitF.t; else if (hitF.state === 'swim') hitF.swim.force = true; hideHint(); return; }
+  if (view === 'frog') {
+    // a tadpole under the tap (seen through the water, so at its apparent depth)
+    let bt = null, bp = 1e9;
+    for (const T of tadpoles) {
+      if (T.st === 'dead') continue;
+      const toT = V3(T.x, T.y / 1.333, T.z).sub(o), along = toT.dot(d); if (along <= 0) continue;
+      const perp = Math.sqrt(Math.max(toT.lengthSq() - along * along, 0)), tol = Math.max(0.025, along * 0.03);
+      if (perp < tol && perp < bp) { bp = perp; bt = T; }
+    }
+    if (bt && bt !== (focus && focus.ref)) { setFocus('tad', bt); setView('frog'); return; }
+  }
   const t = -o.y / d.y; const x = o.x + d.x * t, z = o.z + d.z * t;
-  feed(x, z);
+  if (feedMode === 'tad') feedTadpoles(x, z); else feed(x, z);
 }
 function feed(x, z) {
   let sd = pondSDF(x, z);
@@ -5267,6 +5384,12 @@ function frogGroundY(p, x, z, t) {
   return waterH(x, z, t) + p.bob + 0.0041 + p.layer * 0.0007;
 }
 function updateFrog(f, dt, t) {
+  frogLife(f, dt);
+  if (f.dying) {
+    if (f.dying < 0.01) { f.next = f.swimIn = f.fullT = f.callT = 1e9; f.spawn = null; f.hunt = null; if (f.prey) { f.prey.hunter = null; f.prey = null; } f.chase = null; }
+    frogDying(f, dt);
+    if (!frogs.includes(f)) return;
+  }
   f.t += dt;
   f.breath = 0.5 + 0.5 * Math.sin(t * f.breathW + f.i * 2.1);
   // calling bouts: the male inflates his vocal sac in quick pulses
@@ -5441,7 +5564,7 @@ function updateFrog(f, dt, t) {
     let want = nearA ? toPad : Math.atan2(gz - f.pos.z, gx - f.pos.x);
     if (!nearA && sw.tt > 0.4) want = swimHeading(f, want, dA, f.jumpTo);
     if (f.chase && (f.chase.st !== 'skate' || f.chase.hunter !== f || f.chaseT > 4 || f.tongue)) { if (f.chase.hunter === f && f.chase.st === 'skate') f.chase.hunter = null; f.chase = null; f.chaseCool = rr(4, 8); }
-    if (!f.chase && !f.tongue && f.swallow <= 0 && f.fullT <= 0 && sw.tt > 0.6 && f.chaseCool <= 0 && sw.tt < 30) {
+    if (!f.chase && !f.tongue && !f.spawn && f.swallow <= 0 && f.fullT <= 0 && sw.tt > 0.6 && f.chaseCool <= 0 && sw.tt < 30) {
       for (const S of striders) {
         if (S.st !== 'skate' || (S.hunter && S.hunter !== f)) continue;
         const d = Math.hypot(S.x - f.pos.x, S.z - f.pos.z);
@@ -5454,6 +5577,9 @@ function updateFrog(f, dt, t) {
       const md = Math.hypot(S.x - f.mouthW.x, S.z - f.mouthW.z);
       if (md < FROG_REACH * f.size * 1.1 && Math.abs(wrapAngle(want - f.yaw)) < 0.7) { frogShootTongue(f, S, f.mouthW); f.chase = null; f.chaseCool = rr(4, 8); }
     }
+    // a spawning trip: off to the site in the shallows first, holding still there while the eggs are laid
+    const spw = f.spawn ? spawnSteer(f, dt) : null;
+    if (spw !== null && !f.chase) want = spw === 'hold' ? f.yaw : spw;
     // stroke cycle: power (legs snap straight back, ~0.13 s) -> glide with legs together -> slow recovery
     const PW = 0.22, GL = 0.52;
     const skPrev = f.sk;
@@ -5461,7 +5587,7 @@ function updateFrog(f, dt, t) {
     if (sw.ph >= 1) {
       sw.ph -= 1; sw.T = rr(0.56, 0.7) * Math.pow(f.size, 0.3);   // bigger frogs kick slower but further
       // full kicks in open water, gentle ones close in, none while a glide will carry it there
-      const remain = nearA ? Math.max(dP - tp.r - 0.03 * f.size, 0) : dA + 0.1;
+      const remain = spw === 'hold' ? 0 : spw !== null && f.spawn ? Math.hypot(f.spawn.x - f.pos.x, f.spawn.z - f.pos.z) : nearA ? Math.max(dP - tp.r - 0.03 * f.size, 0) : dA + 0.1;
       sw.kick = remain < 0.05 || sw.v / 2.0 > remain ? 0 : Math.min(1, 0.3 + remain * 1.4);
       if (sw.force) { sw.kick = 1; sw.force = false; }
       if (sw.y < -0.03) sw.kick = Math.max(sw.kick, 0.6);
@@ -5512,7 +5638,7 @@ function updateFrog(f, dt, t) {
     if (sw.bow < 0 && sw.v > 0.1 && dry) { sw.bow = 0.09; addDrop(nx + c0 * 0.035 * f.size, nz + s0 * 0.035 * f.size, 0.026, 0.00045 * Math.min(sw.v / 0.3, 1.5)); }
     // at the rim, legs drawn up and facing the pad: spring out of the water onto it
     const facing = Math.abs(wrapAngle(toPad - f.yaw)) < 0.35;
-    if ((atPad && amp === 0 && sk < 0.05 && facing && sw.y > -0.012) || sw.tt > 70) {
+    if ((atPad && amp === 0 && sk < 0.05 && facing && sw.y > -0.012 && !f.spawn) || sw.tt > 70) {
       const ux = (nx - tp.x) / (dP || 1), uz = (nz - tp.z) / (dP || 1), cr = Math.cos(tp.rot), sr = Math.sin(tp.rot);
       const lx = (cr * ux + sr * uz) * 0.5, lz = (-sr * ux + cr * uz) * 0.5;
       const [ex, ez] = frogPadWorld(tp, lx, lz);
@@ -5569,14 +5695,16 @@ function updateFrog(f, dt, t) {
   f.box.matrixWorld.copy(f.box.matrix);
 }
 function updateFrogs(dt, t) {
-  for (const f of frogs) updateFrog(f, dt, t);
-  frogs.forEach((f, i) => {
+  for (const f of frogs.slice()) updateFrog(f, dt, t);
+  for (let i = 0; i < FROG_MAX; i++) {
+    const f = frogs[i];
+    if (!f) { G.uFrogA.value[i].set(0, -10, 0, -1); G.uFrogB.value[i].set(0.03, 0, 0, 0); G.uFrogC.value[i].set(0, -10, 0, 0); continue; }
     const onPad = f.state !== 'air' && f.state !== 'swim';
     G.uFrogA.value[i].set(f.pos.x, f.pos.y, f.pos.z, onPad ? f.pad : -1);
     const bc = V3(0.0, 0.024, 0).applyMatrix4(f.world);
     G.uFrogC.value[i].set(bc.x, bc.y, bc.z, f.yaw);
     G.uFrogB.value[i].set(0.05 * FROG_SCALE * f.size, 0, 0, 0);
-  });
+  }
 }
 
 // ================================================================= water striders (アメンボ)
@@ -6185,7 +6313,8 @@ function frogTongueUpdate(f, dt, t) {
   if (T.t >= tot && T.hit && T.prey.st === 'tongue') {
     // in: the strider's legs stick out of the mouth for a moment as the frog gulps
     const S = T.prey; S.st = 'mouth'; S.mouthT = 0; S.eater = f; strStats.eaten++;
-    f.swallow = 1.15; f.gulped = false; f.fullT = rr(30, 80); f.wipeSide = rnd() < 0.5 ? 1 : -1; f.prey = null;
+    f.swallow = 1.15; f.gulped = false; f.wipeSide = rnd() < 0.5 ? 1 : -1; f.prey = null;
+    f.energy = Math.min(1, f.energy + 0.5); f.fullT = lifeOff ? rr(30, 80) : 15 + 60 * f.energy;
   }
   if (T.t >= tot + 0.07) f.tongue = null;
 }
@@ -6212,6 +6341,714 @@ function frogSwallow(f, dt) {
   if (!f.tongue) f.mouth = u < 0.3 ? 0.22 * (1 - smooth(0.2, 0.3, u)) : 0;
   if (u > 0.22 && !f.gulped) { f.gulped = true; SFX.frogGulp(f.pos.x, f.pos.y + 0.02, f.pos.z, f.size); }
 }
+
+// ================================================================= the frogs' life cycle (カエルの一生)
+// Eggs hatch into tadpoles; tadpoles graze the algae on the floor of the shallows, grow, sprout hind legs and then
+// forelegs, and climb out onto a lily pad as froglets whose tails shrink away; froglets grow into frogs, frogs keep
+// growing, females lay eggs, and every frog dies sooner or later. Time in the pond runs at one hour per second, so an
+// egg becomes a grown frog in about fifty days — twenty minutes. Food is short: the algae grows back slowly, big
+// tadpoles push small ones off it, hungry ones bite the weak and eat the dead, and the koi take any that stray into
+// open water, so only a few of each brood make it. If the pond is ever left with no frog, tadpole or egg at all, a
+// fresh batch of eggs appears.
+const LIFE = {
+  EGG: 72,          // hours from laying to hatching
+  LEG0: 280, LEG1: 520, ARM: 590, CLIMB: 630, TAILGONE: 760, ADULT: 1128,   // development hours (a well-fed tadpole: one per hour)
+  TAD_MAX: 40, START: 40,
+};
+let worldH = 0;                        // hours since this pond began
+let lifeOff = false;                   // tests switch the life cycle off
+const tadpoles = [], eggs = [], tfood = [];
+const lifeStats = { hatched: 0, starved: 0, eaten: 0, bitten: 0, koi: 0, left: 0, climbed: 0, frogDied: 0, frogOld: 0, frogStarved: 0, laid: 0, pops: 0 };
+const smooth01 = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const floorY = (x, z) => Math.min(terrainH(x, z), -0.02);
+
+// ---------------------------------------------------------------- algae on the floor: what the tadpoles live on
+const ALG_W = 30, ALG_H = 20;
+const algae = new Float32Array(ALG_W * ALG_H), algaeCap = new Float32Array(ALG_W * ALG_H);
+const algCell = (x, z) => { const i = Math.floor((x - DOMAIN.x) / DOMAIN.w * ALG_W), j = Math.floor((z - DOMAIN.z) / DOMAIN.h * ALG_H); return i < 0 || j < 0 || i >= ALG_W || j >= ALG_H ? -1 : j * ALG_W + i; };
+const algX = (c) => DOMAIN.x + ((c % ALG_W) + 0.5) / ALG_W * DOMAIN.w, algZ = (c) => DOMAIN.z + (Math.floor(c / ALG_W) + 0.5) / ALG_H * DOMAIN.h;
+for (let c = 0; c < algae.length; c++) {
+  const x = algX(c), z = algZ(c), sd = pondSDF(x, z);
+  // it grows best in the sunny shallows; little in the deep middle, none on land
+  algaeCap[c] = sd > -0.05 ? 0 : sd > -1.1 ? 1 : 0.25;
+}
+function algaeReset(k = 0.18) { for (let c = 0; c < algae.length; c++) algae[c] = algaeCap[c] * k; }
+algaeReset();
+// a good spot in the shallows (for eggs and the first tadpoles)
+function shallowSpot(nearX, nearZ, R = 1.5) {
+  for (let i = 0; i < 120; i++) {
+    let x, z;
+    if (nearX !== undefined) { const a = lr(0, TAU), d = Math.sqrt(lifeRand()) * R; x = nearX + Math.cos(a) * d; z = nearZ + Math.sin(a) * d; }
+    else { const p = polarAt(lr(0, TAU), lr(-0.55, -0.22)); x = p.x; z = p.z; }
+    const sd = pondSDF(x, z);
+    if (sd > -0.18 || sd < -0.7) continue;
+    if (floaters.some((q) => Math.hypot(q.x - x, q.z - z) < q.r * 0.8)) continue;
+    return [x, z];
+  }
+  const p = polarAt(lr(0, TAU), -0.35); return [p.x, p.z];
+}
+
+// ---------------------------------------------------------------- tadpole model
+// one geometry for the solid parts (x forward, unit length: snout at x = 0, tail tip at x = -1) and one for the fin
+const TAD_PART = { BODY: 0, EYE: 1, MUSCLE: 2, HIND: 3, FORE: 4 };
+function buildTadpole() {
+  const P = [], S = [], PT = [], AX = [], IDX = [];
+  const fP = [], fS = [], fAX = [], fIDX = [];
+  // body: a plump egg, a little flattened, narrowing into the tail
+  { const NU = 16, NV = 14, o = 0;
+    for (let i = 0; i <= NU; i++) {
+      const u = i / NU, s = u * 0.40, prof = Math.pow(Math.sin(Math.PI * Math.min(1, 0.04 + u * 1.0)), 0.6) * (1 - 0.35 * u * u);
+      for (let j = 0; j <= NV; j++) {
+        const a = j / NV * TAU, sy = Math.sin(a), cz = Math.cos(a);
+        P.push(-s, sy * 0.122 * prof * (sy < 0 ? 0.92 : 1.0) + 0.005, cz * 0.158 * prof); S.push(s); PT.push(TAD_PART.BODY); AX.push(sy, 0, 0);
+      }
+    }
+    for (let i = 0; i < NU; i++) for (let j = 0; j < NV; j++) { const a = o + i * (NV + 1) + j, b = a + NV + 1; IDX.push(a, b, a + 1, a + 1, b, b + 1); }
+  }
+  const tube = (pts, rads, part, side, NV = 7) => {
+    const o = P.length / 3;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[Math.min(i + 1, pts.length - 1)], r0 = pts[Math.max(i - 1, 0)];
+      let tx = q[0] - r0[0], ty = q[1] - r0[1], tz = q[2] - r0[2]; const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+      // a frame round the tangent
+      let ux = -tz, uy = 0, uz = tx; let ul = Math.hypot(ux, uy, uz); if (ul < 1e-4) { ux = 0; uy = 1; uz = 0; ul = 1; } ux /= ul; uy /= ul; uz /= ul;
+      const vx = ty * uz - tz * uy, vy = tz * ux - tx * uz, vz = tx * uy - ty * ux;
+      for (let j = 0; j <= NV; j++) {
+        const a = j / NV * TAU, c = Math.cos(a) * rads[i], sn = Math.sin(a) * rads[i];
+        P.push(p[0] + ux * c + vx * sn, p[1] + uy * c + vy * sn, p[2] + uz * c + vz * sn); S.push(-p[0]); PT.push(part); AX.push(side, i / (pts.length - 1), 0);
+      }
+    }
+    for (let i = 0; i < pts.length - 1; i++) for (let j = 0; j < NV; j++) { const a = o + i * (NV + 1) + j, b = a + NV + 1; IDX.push(a, b, a + 1, a + 1, b, b + 1); }
+  };
+  const ball = (c, r, part, side) => {
+    const o = P.length / 3, NU = 6, NV = 8;
+    for (let i = 0; i <= NU; i++) for (let j = 0; j <= NV; j++) {
+      const th = i / NU * Math.PI, ph = j / NV * TAU;
+      P.push(c[0] + Math.sin(th) * Math.cos(ph) * r, c[1] + Math.cos(th) * r, c[2] + Math.sin(th) * Math.sin(ph) * r); S.push(-c[0]); PT.push(part); AX.push(side, Math.cos(th), Math.sin(th) * Math.sin(ph));
+    }
+    for (let i = 0; i < NU; i++) for (let j = 0; j < NV; j++) { const a = o + i * (NV + 1) + j, b = a + NV + 1; IDX.push(a, b, a + 1, a + 1, b, b + 1); }
+  };
+  for (const sd of [1, -1]) {
+    ball([-0.075, 0.052, 0.108 * sd], 0.036, TAD_PART.EYE, sd);                                     // eyes, set wide on the sides
+    // hind legs at the base of the tail: thigh, shank, foot (scaled up from nothing as they grow)
+    tube([[-0.37, -0.03, 0.06 * sd], [-0.48, -0.05, 0.11 * sd], [-0.57, -0.045, 0.065 * sd], [-0.68, -0.04, 0.085 * sd]], [0.026, 0.020, 0.013, 0.010], TAD_PART.HIND, sd);
+    // forelegs, which break out of the gill chamber late
+    tube([[-0.21, -0.055, 0.10 * sd], [-0.16, -0.095, 0.17 * sd], [-0.09, -0.11, 0.15 * sd]], [0.018, 0.014, 0.010], TAD_PART.FORE, sd);
+  }
+  // the tail's muscle
+  { const pts = [], rads = []; for (let i = 0; i <= 10; i++) { const s = 0.33 + i / 10 * 0.64; pts.push([-s, 0.004, 0]); rads.push(0.064 * Math.pow(1 - i / 10, 1.2) + 0.004); } tube(pts, rads, TAD_PART.MUSCLE, 0, 8); }
+  // the fin: a clear membrane above and below the muscle
+  { const NU = 26;
+    for (let i = 0; i <= NU; i++) {
+      const u = i / NU, s = 0.30 + u * 0.70;
+      const up = 0.14 * Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.12)), 0.7) + 0.004, lo = 0.11 * Math.pow(Math.sin(Math.PI * Math.min(1, 0.05 + u)), 0.75) + 0.003;
+      fP.push(-s, 0.004 + up, 0, -s, 0.004, 0, -s, 0.004 - lo, 0); fS.push(s, s, s); fAX.push(1, u, 0, 0, u, 0, -1, u, 0);
+    }
+    for (let i = 0; i < NU; i++) { const a = i * 3, b = a + 3; fIDX.push(a, b, a + 1, a + 1, b, b + 1, a + 1, b + 1, a + 2, a + 2, b + 1, b + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('aS', new THREE.Float32BufferAttribute(S, 1));
+  g.setAttribute('aPart', new THREE.Float32BufferAttribute(PT, 1)); g.setAttribute('aAux', new THREE.Float32BufferAttribute(AX, 3));
+  g.setIndex(IDX); g.computeVertexNormals();
+  const gf = new THREE.BufferGeometry();
+  gf.setAttribute('position', new THREE.Float32BufferAttribute(fP, 3)); gf.setAttribute('aS', new THREE.Float32BufferAttribute(fS, 1));
+  gf.setAttribute('aPart', new THREE.Float32BufferAttribute(new Float32Array(fS.length).fill(5), 1)); gf.setAttribute('aAux', new THREE.Float32BufferAttribute(fAX, 3));
+  gf.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(fS.length * 3).map((_, k) => (k % 3 === 2 ? 1 : 0)), 3));
+  gf.setIndex(fIDX);
+  return [g, gf];
+}
+const TAD_VS = /* glsl */`
+${GL_COMMON}
+attribute float aS; attribute float aPart; attribute vec3 aAux;
+attribute vec4 iA; attribute vec4 iB; attribute vec4 iC; attribute vec4 iD;   // pos+yaw | length, beat phase, beat size, pitch | hind legs, forelegs, ripeness, death | seed, bend, -, -
+varying vec3 vW; varying vec3 vN; varying float vS; varying float vPart; varying vec3 vAux; varying vec4 vC; varying float vSeed; varying vec3 vL;
+float latAt(float s){ float k = max(s - 0.22, 0.0); return iB.z * k * k * 1.6 * sin(iB.y - 8.5 * s) + iD.y * k * k; }
+void main(){
+  vec3 p = position; vec3 n = normal; float s = aS;
+  float pt = aPart;
+  // limbs grow out of nothing
+  if (pt > 2.5 && pt < 3.5) { vec3 o = vec3(-0.37, -0.03, 0.06 * aAux.x); p = o + (p - o) * iC.x; }
+  if (pt > 3.5 && pt < 4.5) { vec3 o = vec3(-0.21, -0.055, 0.10 * aAux.x); p = o + (p - o) * iC.y; }
+  vL = p;
+  // a dead one floats limp, curled a little
+  float lat = latAt(s), e = 0.01, sl = -(latAt(s + e) - latAt(s - e)) / (2.0 * e), nr = inversesqrt(1.0 + sl * sl);
+  p = vec3(p.x - sl * p.z * nr, p.y, p.z * nr + lat);
+  n = vec3(n.x - sl * n.z, n.y, sl * n.x + n.z) * nr;
+  p *= iB.x;
+  float cy = cos(iA.w), sy = sin(iA.w), cp = cos(iB.w), sp = sin(iB.w);
+  vec3 q = vec3(p.x * cp - p.y * sp, p.x * sp + p.y * cp, p.z);
+  vec3 nq = vec3(n.x * cp - n.y * sp, n.x * sp + n.y * cp, n.z);
+  vec3 w = iA.xyz + vec3(q.x * cy - q.z * sy, q.y, q.x * sy + q.z * cy);
+  vW = w; vN = normalize(vec3(nq.x * cy - nq.z * sy, nq.y, nq.x * sy + nq.z * cy));
+  vS = s; vPart = pt; vAux = aAux; vC = iC; vSeed = iD.x;
+  gl_Position = projectionMatrix * viewMatrix * vec4(apparentPos(w), 1.0);
+}`;
+const TAD_FS = /* glsl */`
+${GL_COMMON}
+${GL_UNDER}
+varying vec3 vW; varying vec3 vN; varying float vS; varying float vPart; varying vec3 vAux; varying vec4 vC; varying float vSeed; varying vec3 vL;
+void main(){
+  vec3 N = normalize(vN); if (!gl_FrontFacing) N = -N;
+  vec3 V = normalize(uCamPos - vW);
+  float ripe = vC.z, dead = vC.w;
+  vec2 sp2 = vec2(vS * 60.0, vAux.x * 9.0 + vSeed * 13.0);
+  vec3 alb; float a = 1.0, gl = 0.25;
+  // olive-brown back dusted with gold, paler gold-grey belly; greener as it nears the change
+  vec3 back = mix(vec3(0.045, 0.040, 0.026), vec3(0.060, 0.085, 0.030), ripe);
+  vec3 belly = mix(vec3(0.30, 0.29, 0.22), vec3(0.40, 0.42, 0.29), ripe);
+  // fine gold freckles fixed to the skin, faded out where they would be smaller than a pixel
+  vec3 fq = vL * 95.0 + vSeed * 17.0;
+  float gold = smoothstep(0.70, 0.84, vnoise3(fq)) * clamp(1.6 - fwidth(fq.x) * 1.2, 0.0, 1.0);
+  if (vPart < 0.5) {
+    alb = mix(belly, back, smoothstep(-0.55, 0.35, vAux.x));
+    alb = mix(alb, vec3(0.36, 0.30, 0.14), gold * 0.45 * smoothstep(-0.2, 0.6, vAux.x));
+    gl = 0.5;
+  } else if (vPart < 1.5) {
+    alb = mix(vec3(0.02), vec3(0.55, 0.42, 0.16), smoothstep(0.45, 0.75, abs(vAux.z)) * 0.6); gl = 1.6;
+  } else if (vPart < 2.5) {
+    alb = mix(vec3(0.20, 0.17, 0.10), back * 1.3, 0.5); alb *= 0.8 + 0.4 * vnoise(sp2 * 0.5);
+  } else if (vPart < 4.5) {
+    alb = mix(back * 1.4 + vec3(0.03), belly, 0.25);
+  } else {
+    // the fin: clear, with dark freckles
+    alb = vec3(0.50, 0.48, 0.40);
+    float fr = smoothstep(0.60, 0.76, vnoise(vec2(vS * 46.0, vAux.y * 9.0 + vAux.x * 3.0 + vSeed * 7.0)));
+    alb = mix(alb, vec3(0.05, 0.045, 0.03), fr * 0.85);
+    a = mix(0.32, 0.75, fr) * smoothstep(1.0, 0.86, vS) * (0.75 + 0.25 * abs(vAux.x));
+  }
+  alb = mix(alb, vec3(0.55, 0.53, 0.46), dead * 0.6);
+  vec3 sunPart; vec3 L = underLight(vW, N, 1.0, -1, sunPart);
+  vec3 col = alb * L;
+  vec3 Ls = -sunInWater();
+  col += sunPart * ggx(max(dot(N, normalize(Ls + V)), 0.0), 0.3) * 0.02 * gl;
+  gl_FragColor = vec4(viewThroughWater(col, vW), a);
+}`;
+const [TAD_GEO, TAD_FIN_GEO] = buildTadpole();
+const tadIA = new THREE.InstancedBufferAttribute(new Float32Array(LIFE.TAD_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const tadIB = new THREE.InstancedBufferAttribute(new Float32Array(LIFE.TAD_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const tadIC = new THREE.InstancedBufferAttribute(new Float32Array(LIFE.TAD_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const tadID = new THREE.InstancedBufferAttribute(new Float32Array(LIFE.TAD_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const tadGeo = new THREE.InstancedBufferGeometry().copy(TAD_GEO), tadFinGeo = new THREE.InstancedBufferGeometry().copy(TAD_FIN_GEO);
+for (const g of [tadGeo, tadFinGeo]) { g.setAttribute('iA', tadIA); g.setAttribute('iB', tadIB); g.setAttribute('iC', tadIC); g.setAttribute('iD', tadID); g.instanceCount = 0; }
+const tadMesh = new THREE.Mesh(tadGeo, smat(TAD_VS, TAD_FS, {}, { side: THREE.DoubleSide }));
+const tadFinMesh = new THREE.Mesh(tadFinGeo, smat(TAD_VS, TAD_FS, {}, { side: THREE.DoubleSide, transparent: true, depthWrite: false }));
+tadMesh.frustumCulled = tadFinMesh.frustumCulled = false; tadFinMesh.renderOrder = 3;
+onLayers(tadMesh, LAYER.REFR); onLayers(tadFinMesh, LAYER.REFR); scene.add(tadMesh); scene.add(tadFinMesh);
+
+// ---------------------------------------------------------------- eggs: clumps of jelly with a dark embryo in each
+const EGG_MAX = 120;
+const eggIA = new THREE.InstancedBufferAttribute(new Float32Array(EGG_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const eggIB = new THREE.InstancedBufferAttribute(new Float32Array(EGG_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const eggGeo = new THREE.InstancedBufferGeometry().copy(new THREE.IcosahedronGeometry(1, 2));
+eggGeo.setAttribute('iA', eggIA); eggGeo.setAttribute('iB', eggIB); eggGeo.instanceCount = 0;
+const EGG_VS = /* glsl */`
+${GL_COMMON}
+attribute vec4 iA; attribute vec4 iB;    // centre, jelly radius | development 0..1, seed, wiggle, -
+varying vec3 vW; varying vec3 vN; varying vec3 vL; varying vec4 vB;
+void main(){ vec3 w = iA.xyz + position * iA.w; vW = w; vN = normal; vL = position; vB = iB; gl_Position = projectionMatrix * viewMatrix * vec4(apparentPos(w), 1.0); }`;
+const eggMesh = new THREE.Mesh(eggGeo, smat(EGG_VS, /* glsl */`
+${GL_COMMON}
+${GL_UNDER}
+varying vec3 vW; varying vec3 vN; varying vec3 vL; varying vec4 vB;
+void main(){
+  vec3 N = normalize(vN), V = normalize(uCamPos - vW);
+  // the embryo: a dark ball that stretches into a curled little tadpole as it develops
+  vec3 rd = -V, ro = vL; float dev = vB.x;
+  float bestT = 1e3; vec3 e = vec3(0.0);
+  float ang = vB.y * 6.28 + vB.z;
+  vec3 ax = vec3(cos(ang), 0.25 * sin(ang * 1.7), sin(ang));
+  for (int i = 0; i < 2; i++) {
+    vec3 c = ax * (float(i) - 0.5) * 0.30 * dev;
+    float r = mix(0.42, 0.30, dev) * (i == 0 ? 1.0 : mix(1.0, 0.55, dev));
+    vec3 oc = ro - c; float b = dot(oc, rd), cc = dot(oc, oc) - r * r, h = b * b - cc;
+    if (h > 0.0) { float t = -b - sqrt(h); if (t > 0.0 && t < bestT) { bestT = t; e = normalize(ro + rd * t - c); } }
+  }
+  vec3 sunPart; vec3 L = underLight(vW, N, 1.0, -1, sunPart);
+  vec3 jelly = vec3(0.62, 0.66, 0.60) * L * 0.5;
+  float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+  vec3 col = jelly * (0.25 + fres * 0.8) + sunPart * pow(max(dot(reflect(-V, N), -sunInWater()), 0.0), 40.0) * 0.08;
+  float alpha = 0.22 + 0.4 * fres;
+  if (bestT < 1e2) {
+    // dark brown on top (the animal pole), cream underneath; it all darkens as the little tadpole takes shape
+    vec3 emb = mix(vec3(0.30, 0.27, 0.18), vec3(0.022, 0.019, 0.014), smoothstep(-0.45, 0.15, e.y) * (1.0 - 0.5 * dev) + 0.5 * dev);
+    col = mix(col, emb * L * 0.75, 0.88); alpha = 0.95;
+  }
+  gl_FragColor = vec4(viewThroughWater(col, vW), alpha);
+}`, {}, { transparent: true, depthWrite: false }));
+eggMesh.frustumCulled = false; eggMesh.renderOrder = 3;
+onLayers(eggMesh, LAYER.REFR); scene.add(eggMesh);
+function layEggs(x, z, n, opts = {}) {
+  const list = [];
+  for (let i = 0; i < n; i++) {
+    // a loose clump hanging just under the surface
+    const a = lr(0, TAU), r = Math.sqrt(lifeRand()) * 0.012;
+    list.push([Math.cos(a) * r, -lr(0, 0.014), Math.sin(a) * r, lifeRand()]);
+  }
+  const E = { x, z, y: -0.012, laid: opts.laid ?? worldH, list };
+  eggs.push(E); lifeStats.laid += n;
+  return E;
+}
+
+// ---------------------------------------------------------------- tadpole food: flakes that sink to the floor
+const TFOOD_MAX = 48;
+const tfIA = new THREE.InstancedBufferAttribute(new Float32Array(TFOOD_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const tfGeo = new THREE.InstancedBufferGeometry().copy(new THREE.CylinderGeometry(1, 1, 0.25, 7));
+tfGeo.setAttribute('iA', tfIA); tfGeo.instanceCount = 0;
+const tfMesh = new THREE.Mesh(tfGeo, smat(/* glsl */`
+${GL_COMMON}
+attribute vec4 iA; varying vec3 vW; varying vec3 vN;
+void main(){ float r = iA.w; vec3 w = iA.xyz + vec3(position.x * r, position.y * r, position.z * r); vW = w; vN = normal; gl_Position = projectionMatrix * viewMatrix * vec4(apparentPos(w), 1.0); }`, /* glsl */`
+${GL_COMMON}
+${GL_UNDER}
+varying vec3 vW; varying vec3 vN;
+void main(){ vec3 sp; vec3 L = underLight(vW, normalize(vN), 1.0, -1, sp); vec3 alb = mix(vec3(0.16, 0.20, 0.06), vec3(0.30, 0.26, 0.10), hash12(floor(vW.xz * 900.0))); gl_FragColor = vec4(viewThroughWater(alb * L, vW), 1.0); }`));
+tfMesh.frustumCulled = false; onLayers(tfMesh, LAYER.REFR); scene.add(tfMesh);
+function feedTadpoles(x, z) {
+  let sd = pondSDF(x, z);
+  if (sd > 0.12) return;                                    // tapped on dry land
+  if (sd > -0.12) [x, z] = snapToSdf(x, z, -0.12);
+  if (tfood.length >= TFOOD_MAX) tfood.shift();
+  tfood.push({ x, z, y: 0, vy: -0.01, amount: 1, age: 0, settled: false, ph: lr(0, TAU) });
+  addDrop(x, z, 0.012, -0.0004); SFX.plip(x, z, 0.6);
+  hideHint();
+}
+
+// ---------------------------------------------------------------- tadpoles
+function makeTadpole(o) {
+  if (tadpoles.length >= LIFE.TAD_MAX) return null;
+  const T = { id: o.id ?? lifeId++, born: o.born ?? worldH, dev: o.dev ?? 0, x: o.x, z: o.z, y: o.y ?? floorY(o.x, o.z) + 0.01, yaw: o.yaw ?? lr(0, TAU),
+    vx: 0, vz: 0, vy: 0, sp: 0, energy: o.energy ?? 0.6, health: o.health ?? 1, st: 'swim', tx: o.x, tz: o.z, retarget: 0, air: lr(20, 90), airT: 0,
+    ph: lr(0, TAU), amp: 0.05, bend: 0, bite: 0, hunt: null, meat: 0, deadT: 0, green: o.green ?? lifeRand() > 0.08, seed: lifeRand(), climb: null, wait: 0, cause: null, flee: 0 };
+  tadpoles.push(T);
+  return T;
+}
+const tadLen = (T) => 0.009 + 0.031 * smooth01(0, LIFE.LEG1, T.dev);
+function tadDie(T, cause) {
+  if (T.st === 'dead') return;
+  T.st = 'dead'; T.cause = cause; T.deadT = 0; T.meat = 0.25 + 0.6 * smooth01(0, LIFE.LEG1, T.dev);
+  if (cause === 'starved') lifeStats.starved++; else if (cause === 'bitten') lifeStats.bitten++;
+  if (focus && focus.ref === T) focusNote(cause === 'starved' ? '弱って力尽きた' : '共食いにあった');
+}
+function tadGone(T, why) {
+  const k = tadpoles.indexOf(T); if (k >= 0) tadpoles.splice(k, 1);
+  if (why === 'koi') { lifeStats.koi++; if (focus && focus.ref === T) focusNote('鯉に食べられた'); }
+  if (focus && focus.ref === T && why !== 'frog') { focusLater(T); }
+}
+function updateTadpoles(dt, t) {
+  // the bigger ones get to the food first
+  tadpoles.sort((a, b) => b.dev - a.dev);
+  for (const T of tadpoles.slice()) {
+    const L = tadLen(T), sizeK = smooth01(0, LIFE.LEG1, T.dev);
+    if (T.st === 'dead') {
+      // a dead tadpole sinks to the floor, pales, and is picked over by the others until nothing is left
+      T.deadT += dt; T.amp = Math.max(0, T.amp - dt * 0.2);
+      const fy = floorY(T.x, T.z) + 0.004;
+      T.y = Math.max(fy, T.y - dt * 0.03);
+      if (T.meat <= 0 || T.deadT > 60) tadGone(T, 'decayed');
+      continue;
+    }
+    T.dev += dt * (T.energy > 0.3 ? 1 : T.energy / 0.3) * (T.climb ? 1 : 1);
+    // living costs energy, more for a bigger tadpole; a starving one weakens and dies
+    T.energy = Math.max(0, T.energy - dt * (0.0045 + 0.0060 * sizeK) * (T.dev > LIFE.CLIMB ? 0.4 : 1));
+    if (T.energy <= 0.001) T.health -= dt * 0.022; else if (T.energy > 0.45) T.health = Math.min(1, T.health + dt * 0.01);
+    if (T.health <= 0) { tadDie(T, 'starved'); continue; }
+    T.bite -= dt; T.retarget -= dt; T.flee = Math.max(0, T.flee - dt);
+    // koi: any that come close drive the tadpole back into the shallows (and catch the slow ones)
+    let kx = 0, kz = 0, kn = 0;
+    for (const k of koi) {
+      const hx = k.pos.x + Math.cos(k.yaw) * k.L * 0.45, hz = k.pos.z + Math.sin(k.yaw) * k.L * 0.45;
+      const d = Math.hypot(hx - T.x, hz - T.z), dy = Math.abs(k.pos.y - T.y);
+      if (d < 0.35 && dy < 0.25) { kx += T.x - hx; kz += T.z - hz; kn++; }
+      if (d < 0.05 + 0.10 * k.L && dy < 0.16 && pondSDF(T.x, T.z) < -0.16 && lifeRand() < dt * 3.0) {
+        addDrop(T.x, T.z, 0.02, -0.0006); SFX.blub(T.x, T.z); k.full = Math.min(1, (k.full || 0) + 0.05);
+        tadGone(T, 'koi'); T.st = 'gone'; break;
+      }
+    }
+    if (T.st === 'gone') continue;
+    if (kn) T.flee = 1.2;
+    // what does it want?
+    let gx = T.tx, gz = T.tz, gy = floorY(T.x, T.z) + 0.006 + L * 0.12, speed = 0.035 + 0.05 * sizeK;
+    if (T.climb && T.climb.bank && T.wait < 3 && frogPool.some((sl) => !sl.used)) T.climb = null;   // room after all
+    if (T.climb && T.climb.bank) {
+      // no room left on the leaves: it crawls out on the bank and leaves the pond for the garden
+      gx = T.climb.x; gz = T.climb.z; gy = -0.006; speed = 0.06;
+      if (Math.hypot(gx - T.x, gz - T.z) < 0.03) {
+        lifeStats.left++; addDrop(T.x, T.z, 0.015, 0.0006); SFX.climb(T.x, T.z);
+        if (focus && focus.ref === T) focusNote('岸に上がって、池から旅立った');
+        tadGone(T, 'left'); continue;
+      }
+    } else if (T.climb) {
+      // metamorphosis: up to the rim of a leaf, then out
+      const p = pads[T.climb.pad], a = Math.atan2(T.z - p.z, T.x - p.x);
+      gx = p.x + Math.cos(a) * (p.r + 0.012); gz = p.z + Math.sin(a) * (p.r + 0.012); gy = -0.006; speed = 0.06;
+      if (Math.hypot(gx - T.x, gz - T.z) < 0.03) {
+        const f = tadToFrog(T, T.climb.pad);
+        if (f) continue;
+        T.climb = null; T.wait++;                  // someone got there first: choose again
+      }
+    } else if (kn) {
+      gx = T.x + kx / kn * 2; gz = T.z + kz / kn * 2; speed = 0.07 + 0.09 * sizeK;   // bolt away from the koi (the little ones are slow)
+    } else if (T.hunt) {
+      // a hungry one goes for a weak or smaller neighbour
+      const V = T.hunt;
+      if (V.st !== 'swim' || Math.hypot(V.x - T.x, V.z - T.z) > 0.25) T.hunt = null;
+      else {
+        gx = V.x; gz = V.z; gy = V.y; speed = 0.11;
+        if (Math.hypot(V.x - T.x, V.z - T.z) < (L + tadLen(V)) * 0.45 && T.bite <= 0) {
+          T.bite = 2.5; V.health -= 0.28; V.flee = 1.5; V.tx = V.x + (V.x - T.x) * 4; V.tz = V.z + (V.z - T.z) * 4;
+          T.energy = Math.min(1, T.energy + 0.1);
+          if (V.health <= 0) { tadDie(V, 'bitten'); T.hunt = null; }
+        }
+      }
+    } else {
+      // food: tadpole flakes on the floor nearby, else the best algae within a little way
+      let best = null, bd = 0.6;
+      for (const F of tfood) if (F.settled && F.amount > 0) { const d = Math.hypot(F.x - T.x, F.z - T.z); if (d < bd) { bd = d; best = F; } }
+      // a dead one nearby is food too
+      if (!best && T.energy < 0.6) for (const D of tadpoles) if (D.st === 'dead' && D.meat > 0) { const d = Math.hypot(D.x - T.x, D.z - T.z); if (d < 0.3 && d < bd) { bd = d; best = D; } }
+      if (best) { gx = best.x; gz = best.z; gy = best.y + 0.003; }
+      else if (T.retarget <= 0) {
+        T.retarget = lr(2, 6);
+        const c0 = algCell(T.x, T.z); let bc = c0, bv = -1;
+        for (let k = 0; k < 10; k++) {
+          const c = algCell(T.x + lr(-0.9, 0.9), T.z + lr(-0.9, 0.9)); if (c < 0 || algaeCap[c] <= 0) continue;
+          const x = algX(c), z = algZ(c), sd = pondSDF(x, z);
+          const v = algae[c] - Math.hypot(x - T.x, z - T.z) * 0.15 - (sd < -0.7 ? 0.3 : 0) - (sd > -0.15 ? 0.5 : 0);
+          if (v > bv) { bv = v; bc = c; }
+        }
+        if (bc >= 0) { T.tx = algX(bc) + lr(-0.15, 0.15); T.tz = algZ(bc) + lr(-0.15, 0.15); if (pondSDF(T.tx, T.tz) > -0.12) [T.tx, T.tz] = snapToSdf(T.tx, T.tz, -0.15); }
+        gx = T.tx; gz = T.tz;
+      }
+      // hungry and something weaker close by?
+      if (T.energy < 0.18 && T.dev > 150) {
+        for (const V of tadpoles) if (V !== T && V.st === 'swim' && !V.climb && (V.dev < T.dev * 0.8 || V.health < 0.5) && Math.hypot(V.x - T.x, V.z - T.z) < 0.12 && lifeRand() < dt * 0.6) { T.hunt = V; break; }
+      }
+      // eat what is under it
+      const d = Math.hypot(gx - T.x, gz - T.z);
+      if (best && d < 0.03) {
+        const take = Math.min(dt * 0.05, best.amount ?? best.meat);
+        if (best.amount !== undefined) best.amount -= take; else best.meat -= take;
+        T.energy = Math.min(1, T.energy + take * (best.amount !== undefined ? 1.5 : 3));
+      } else if (!best) {
+        const c = algCell(T.x, T.z);
+        if (c >= 0 && algae[c] > 0.01 && T.y < floorY(T.x, T.z) + 0.03) {
+          const take = Math.min(algae[c], dt * 0.010 * (0.4 + 0.6 * sizeK));
+          algae[c] -= take; T.energy = Math.min(1, T.energy + take * 2.2);
+        }
+      }
+      // now and then up to the surface for a gulp of air (once the lungs are working)
+      T.air -= dt;
+      if (T.dev > 220 && T.air <= 0) { T.airT = 1.6; T.air = lr(40, 110); }
+      if (T.airT > 0) { T.airT -= dt; gy = -0.004; if (T.y > -0.012 && !T.gulped) { T.gulped = true; addDrop(T.x, T.z, 0.008, 0.0002); } if (T.airT <= 0) T.gulped = false; }
+    }
+    if (T.dev >= LIFE.CLIMB && !T.climb) {
+      // ready to leave the water: the nearest leaf with room — or, when the pond already has all the frogs it can
+      // hold, the bank
+      let bp = -1, bd = 1e9;
+      if (T.wait < 3 && frogPool.some((sl) => !sl.used))
+        for (let i = 0; i < NPAD; i++) { const p = pads[i]; if (p.r < 0.07 || padTaken(i)) continue; const d = Math.hypot(p.x - T.x, p.z - T.z) - p.r; if (d < bd) { bd = d; bp = i; } }
+      if (bp >= 0) T.climb = { pad: bp };
+      else { const [x, z] = snapToSdf(T.x, T.z, -0.035); T.climb = { bank: true, x, z }; }
+    }
+    // swim: a wriggling dart towards the goal, slowing to hang there
+    const dx = gx - T.x, dz = gz - T.z, dist = Math.hypot(dx, dz);
+    const want = Math.atan2(dz, dx), err = wrapAngle(want - T.yaw);
+    const go = dist > 0.02 ? Math.min(1, dist / 0.08) : 0;
+    T.yaw += err * (1 - Math.exp(-dt * (4 + 6 * go)));
+    T.bend = lerp(T.bend, clamp(err, -1, 1) * 0.35, 1 - Math.exp(-dt * 6));
+    const target = speed * go * (Math.abs(err) < 1.2 ? 1 : 0.3);
+    T.sp = lerp(T.sp, target, 1 - Math.exp(-dt * (target > T.sp ? 5 : 2)));
+    T.x += Math.cos(T.yaw) * T.sp * dt; T.z += Math.sin(T.yaw) * T.sp * dt;
+    // keep apart a little, stay in the water and off the leaves' undersides near the bank
+    for (const O of tadpoles) {
+      if (O === T || O.st === 'dead') continue;
+      const ox = T.x - O.x, oz = T.z - O.z, od = Math.hypot(ox, oz), R = (L + tadLen(O)) * 0.35;
+      if (od < R && od > 1e-5) { T.x += ox / od * (R - od) * 0.5; T.z += oz / od * (R - od) * 0.5; }
+    }
+    if (pondSDF(T.x, T.z) > -0.06) [T.x, T.z] = snapToSdf(T.x, T.z, -0.06);
+    T.vy = lerp(T.vy, clamp((gy - T.y) * 2.5, -0.08, 0.08), 1 - Math.exp(-dt * 4));
+    T.y += T.vy * dt; T.y = clamp(T.y, floorY(T.x, T.z) + 0.004, -0.004);
+    // the tail beats with the effort
+    const beat = 0.6 + 6.0 * T.sp / Math.max(L, 0.01) * 0.12;
+    T.ph += dt * TAU * Math.min(beat, 9) ; T.amp = lerp(T.amp, 0.035 + 0.11 * clamp(T.sp / 0.08, 0, 1), 1 - Math.exp(-dt * 5));
+  }
+  // the algae grows back, slowly
+  for (let c = 0; c < algae.length; c++) if (algaeCap[c] > 0) algae[c] += (algaeCap[c] - algae[c]) * dt * 0.0003;
+  // instances
+  let n = 0;
+  for (const T of tadpoles) {
+    if (n >= LIFE.TAD_MAX) break;
+    const L = tadLen(T);
+    tadIA.setXYZW(n, T.x, T.y, T.z, -T.yaw);
+    tadIB.setXYZW(n, L, T.ph, T.st === 'dead' ? 0.02 : T.amp, T.st === 'dead' ? 0 : clamp(T.vy * 4, -0.5, 0.5));
+    tadIC.setXYZW(n, smooth01(LIFE.LEG0, LIFE.LEG1, T.dev), smooth01(LIFE.ARM, LIFE.ARM + 25, T.dev), smooth01(LIFE.LEG1 - 100, LIFE.CLIMB, T.dev), T.st === 'dead' ? Math.min(1, T.deadT / 8) : 0);
+    tadID.setXYZW(n, T.seed, T.st === 'dead' ? 0.25 : T.bend, 0, 0);
+    n++;
+  }
+  tadGeo.instanceCount = tadFinGeo.instanceCount = n;
+  tadIA.needsUpdate = tadIB.needsUpdate = tadIC.needsUpdate = tadID.needsUpdate = true;
+}
+// out of the water: the tadpole becomes a froglet sitting at the rim of the leaf, its tail still long
+function tadToFrog(T, pi) {
+  const p = pads[pi];
+  const male = lifeRand() < 0.5;
+  const f = makeFrog({ male, green: T.green, size: 0.30, seed: T.seed * 3, id: T.id, born: T.born, dev: T.dev, energy: Math.max(T.energy, 0.5), tail: 1,
+    maxSize: male ? lr(1.0, 1.35) : lr(1.3, 2.0), life: LIFE.ADULT + lr(900, 2700), next: lr(30, 60), swimIn: lr(200, 400), fullT: 200, callT: 1e9 });
+  if (!f) return null;
+  const a = Math.atan2(T.z - p.z, T.x - p.x), c = Math.cos(p.rot), sn = Math.sin(p.rot), ux = Math.cos(a), uz = Math.sin(a);
+  f.pad = pi; f.lx = (c * ux + sn * uz) * 0.72; f.lz = (-sn * ux + c * uz) * 0.72; f.yaw = a + Math.PI; f.state = 'land'; f.t = 0;
+  const [x, z] = frogPadWorld(p, f.lx, f.lz); f.pos.set(x, frogGroundY(p, x, z, G.uTime.value), z);
+  p.weight = 0.35;
+  addDrop(T.x, T.z, 0.02, 0.0008); SFX.climb(T.x, T.z);
+  lifeStats.climbed++;
+  const k = tadpoles.indexOf(T); if (k >= 0) tadpoles.splice(k, 1);
+  if (focus && focus.ref === T) { setFocus('frog', f); focusNote('陸に上がって子ガエルになった'); if (view === 'frog') setView('frog'); }
+  return f;
+}
+// ---------------------------------------------------------------- the frogs' lives
+const FROG_STARVE = 0.0035;
+function frogLife(f, dt) {
+  if (lifeOff) return;
+  const S = f.size;
+  // growth: a froglet's tail is absorbed (it does not eat meanwhile), then it grows on what it catches
+  if (f.dev < LIFE.ADULT) {
+    f.dev += dt * (f.dev < LIFE.TAILGONE || f.energy > 0.25 ? 1 : 0.3);
+    const k = smooth01(LIFE.CLIMB, LIFE.ADULT, f.dev);
+    f.size = Math.max(f.size, lerp(0.30, Math.min(f.maxSize, f.male ? 1.0 : 1.12), k));
+    if (f.dev < LIFE.TAILGONE) { f.fullT = Math.max(f.fullT, 5); f.next = Math.max(f.next, f.t + 5); f.swimIn = Math.max(f.swimIn, 20); }
+    if (f.dev >= LIFE.ADULT - 1 && f.callT > 1e8 && f.male) f.callT = lr(5, 30);
+  } else if (f.energy > 0.5 && f.size < f.maxSize) f.size = Math.min(f.maxSize, f.size + dt * 0.0006 * (f.maxSize - f.size + 0.05));
+  f.tail = 1 - smooth01(LIFE.CLIMB, LIFE.TAILGONE, f.dev);
+  f.mat.uniforms.uJuv.value = 1 - smooth01(LIFE.CLIMB, LIFE.ADULT, f.dev);
+  if (f.dev >= LIFE.TAILGONE) f.energy = Math.max(0, f.energy - dt * 0.0012 * (0.6 + 0.4 * S));
+  if (f.energy <= 0.001) f.health -= dt * FROG_STARVE; else if (f.energy > 0.4) f.health = Math.min(1, f.health + dt * 0.002);
+  f.cool -= dt;
+  // the end: old age (each frog has its own span) or hunger
+  if (!f.dying && (worldH - f.born > f.life || f.health <= 0)) { f.dying = 0.001; f.cause = f.health <= 0 ? 'starved' : 'old'; lifeStats.frogDied++; lifeStats[f.cause === 'old' ? 'frogOld' : 'frogStarved']++; if (focus && focus.ref === f) focusNote(f.cause === 'old' ? '寿命をむかえた' : '餌が足りず力尽きた'); }
+  // breeding: a well-fed grown female, with a grown male about, goes down to the shallows to lay
+  if (!f.dying && !f.male && f.dev >= LIFE.ADULT && f.size > 0.95 && f.energy > 0.55 && f.cool <= 0 && f.state === 'sit' && !f.prey && !f.tongue && f.swallow <= 0
+    && frogs.some((o) => o.male && o.dev >= LIFE.ADULT && !o.dying) && tadpoles.length + eggCount() < 26) {
+    const rate = lightName === 'night' ? 1 / 70 : lightName === 'evening' ? 1 / 110 : 1 / 320;
+    if (lifeRand() < dt * rate) startSpawn(f);
+  }
+}
+function eggCount() { let n = 0; for (const E of eggs) n += E.list.length; return n; }
+// off the leaf and into the water, heading for a spot in the shallows near some water weed
+function startSpawn(f) {
+  const cur = pads[f.pad];
+  let site = null;
+  // open water in the shallows, clear of every leaf (a swimming frog cannot get in under one)
+  for (let i = 0; i < 60 && !site; i++) {
+    const s = shallowSpot(cur.x, cur.z, 2.2);
+    if (Math.hypot(s[0] - cur.x, s[1] - cur.z) > cur.r + 0.15 && floaters.every((q) => Math.hypot(q.x - s[0], q.z - s[1]) > q.r + 0.12)) site = s;
+  }
+  if (!site) return;
+  // where it will go afterwards: the free leaf nearest the site
+  let bp = -1, bd = 1e9;
+  for (let i = 0; i < NPAD; i++) { if (i === f.pad || padTaken(i, f)) continue; const p = pads[i]; if (p.r < padMinR(f, 0.08)) continue; const d = Math.hypot(p.x - site[0], p.z - site[1]); if (d < bd) { bd = d; bp = i; } }
+  if (bp < 0) return;
+  const appA = padApproach(bp, site[0], site[1]) ?? 0;
+  const a0 = Math.atan2(site[1] - cur.z, site[0] - cur.x), R = cur.r + 0.08;
+  const ex = cur.x + Math.cos(a0) * R, ez = cur.z + Math.sin(a0) * R;
+  f.swimPlan = { to: bp, appA, ex, ez }; f.state = 'crouch'; f.t = 0; f.jumpTo = bp; f.diving = true;
+  f.spawn = { x: site[0], z: site[1], t: 0 };
+  f.cool = lr(500, 900);
+  // the male follows her down
+  const m = frogs.filter((o) => o.male && o.dev >= LIFE.ADULT && !o.dying && o.state === 'sit').sort((a, b) => Math.hypot(a.pos.x - f.pos.x, a.pos.z - f.pos.z) - Math.hypot(b.pos.x - f.pos.x, b.pos.z - f.pos.z))[0];
+  if (m && m.pad >= 0) {
+    const mp = pads[m.pad]; let mb = -1, md = 1e9;
+    for (let i = 0; i < NPAD; i++) { if (i === m.pad || i === bp || padTaken(i, m)) continue; const p = pads[i]; if (p.r < padMinR(m, 0.08)) continue; const d = Math.hypot(p.x - site[0], p.z - site[1]); if (d < md) { md = d; mb = i; } }
+    if (mb >= 0) {
+      const ma = Math.atan2(site[1] - mp.z, site[0] - mp.x), mR = mp.r + 0.08;
+      m.swimPlan = { to: mb, appA: padApproach(mb, site[0], site[1]) ?? 0, ex: mp.x + Math.cos(ma) * mR, ez: mp.z + Math.sin(ma) * mR };
+      m.state = 'crouch'; m.t = 0; m.jumpTo = mb; m.diving = true; m.spawn = { x: site[0] + 0.05, z: site[1] + 0.03, t: 0, male: true, mate: f }; m.cool = 300; f.spawn.mate = m;
+    }
+  }
+}
+// while swimming: the spawning trip overrides the heading. Returns the heading to take, or null
+function spawnSteer(f, dt) {
+  const s = f.spawn; if (!s) return null;
+  const d = Math.hypot(s.x - f.pos.x, s.z - f.pos.z);
+  if (d < 0.06) {
+    s.t += dt;
+    // she waits there for the male (a while, at least); he stays by her until the eggs are out
+    const mate = s.mate && s.mate.spawn && !s.mate.dying ? s.mate : null;
+    if (s.male ? (s.t > 3 && (!mate || s.t > 20)) : (s.t > 4 && (!mate || Math.hypot(mate.pos.x - f.pos.x, mate.pos.z - f.pos.z) < 0.16 || s.t > 16))) {
+      if (!s.male) { layEggs(f.pos.x, f.pos.z, Math.round(lr(9, 15))); f.energy = Math.max(0.1, f.energy - 0.35); if (focus && focus.ref === f) focusNote('卵を産んだ'); }
+      f.spawn = null;
+    }
+    return 'hold';
+  }
+  if (s.t === 0 && f.swim && f.swim.tt > 40) { f.spawn = null; return null; }   // never got there: give up
+  return Math.atan2(s.z - f.pos.z, s.x - f.pos.x);
+}
+// a dying frog stops, shuts its eyes and fades away
+function frogDying(f, dt) {
+  f.dying += dt;
+  f.blinkHold = Math.min(1, f.dying / 1.2);
+  f.mat.uniforms.uFade.value = smooth01(2.5, 7, f.dying);
+  if (f.dying > 7.2) { f.blinkHold = undefined; const wasFocus = focus && focus.ref === f; removeFrog(f); if (wasFocus) {} }
+}
+
+// ---------------------------------------------------------------- the life cycle each frame
+let lifeSaveT = 20, popCheckT = 2;
+function updateLife(dt, t) {
+  if (lifeOff) return;
+  worldH += dt;
+  // eggs develop, wobble, and hatch
+  for (let i = eggs.length - 1; i >= 0; i--) {
+    const E = eggs[i];
+    if (worldH - E.laid >= LIFE.EGG) {
+      for (const e of E.list) makeTadpole({ x: E.x + e[0], z: E.z + e[2], y: E.y + e[1], dev: 0, energy: 0.55, born: worldH });
+      lifeStats.hatched += E.list.length;
+      eggs.splice(i, 1);
+    }
+  }
+  let n = 0;
+  for (const E of eggs) for (const e of E.list) {
+    if (n >= EGG_MAX) break;
+    const dev = clamp((worldH - E.laid) / LIFE.EGG, 0, 1);
+    eggIA.setXYZW(n, E.x + e[0], waterH(E.x, E.z, t) + E.y + e[1], E.z + e[2], 0.0028);
+    eggIB.setXYZW(n, dev, e[3], dev > 0.8 ? Math.sin(t * 9 + e[3] * 20) * 0.6 : 0, 0);
+    n++;
+  }
+  eggGeo.instanceCount = n; eggIA.needsUpdate = eggIB.needsUpdate = true;
+  // tadpole flakes sink, settle and are eaten
+  let m = 0;
+  for (let i = tfood.length - 1; i >= 0; i--) {
+    const F = tfood[i]; F.age += dt;
+    const fy = floorY(F.x, F.z) + 0.002;
+    if (!F.settled) { F.ph += dt * 3; F.y = Math.max(fy, F.y - dt * 0.05); F.x += Math.cos(F.ph) * 0.004 * dt; F.z += Math.sin(F.ph * 0.7) * 0.004 * dt; if (F.y <= fy + 1e-4) F.settled = true; }
+    if (F.amount <= 0 || F.age > 240) { tfood.splice(i, 1); continue; }
+  }
+  for (const F of tfood) { if (m >= TFOOD_MAX) break; tfIA.setXYZW(m++, F.x, F.y, F.z, 0.0035 * (0.4 + 0.6 * F.amount)); }
+  tfGeo.instanceCount = m; tfIA.needsUpdate = true;
+  updateTadpoles(dt, t);
+  // nobody left at all? a new batch of eggs appears
+  popCheckT -= dt;
+  if (popCheckT <= 0) {
+    popCheckT = 2;
+    if (!frogs.length && !tadpoles.some((T) => T.st !== 'dead') && !eggs.length) lifePop();
+    lifeTitle();
+  }
+  lifeSaveT -= dt;
+  if (lifeSaveT <= 0) { lifeSaveT = 20; lifeSave(); }
+  focusCard(dt);
+}
+function lifePop() {
+  lifeStats.pops++;
+  for (let k = 0; k < 3; k++) {
+    const [x, z] = shallowSpot();
+    layEggs(x, z, 13);
+    splash(x, 0.004, z, 4, 0.2, 0.002); addDrop(x, z, 0.03, -0.0008); SFX.plip(x, z, 0.8);
+  }
+}
+// a brand-new pond: forty young tadpoles in a few groups in the shallows
+function lifeFresh() {
+  worldH = 0; tadpoles.length = 0; eggs.length = 0; tfood.length = 0;
+  for (const f of frogs.slice()) removeFrog(f);
+  algaeReset();
+  const groups = [shallowSpot(), shallowSpot(), shallowSpot()];
+  for (let i = 0; i < LIFE.START; i++) {
+    const [gx, gz] = groups[i % 3], [x, z] = shallowSpot(gx, gz, 0.45);
+    const age = lr(0, 30);
+    makeTadpole({ x, z, dev: age, born: -age, energy: lr(0.45, 0.7) });
+  }
+}
+
+// ---------------------------------------------------------------- saving (in this browser) and loading
+const SAVE_KEY = 'suiren-ike-life-v1';
+function lifeSave() {
+  if (lifeOff || OPTS.capture) return;
+  try {
+    const r = (v, k = 1000) => Math.round(v * k) / k;
+    const data = { v: 1, t: r(worldH, 10), id: lifeId,
+      tads: tadpoles.filter((T) => T.st !== 'dead').map((T) => [T.id, r(T.born, 10), r(T.dev, 10), r(T.x), r(T.z), r(T.y), r(T.energy), r(T.health), T.green ? 1 : 0, r(T.seed)]),
+      frogs: frogs.filter((f) => !f.dying).map((f) => [f.id, r(f.born, 10), r(f.dev, 10), f.male ? 1 : 0, f.green ? 1 : 0, r(f.size), r(f.maxSize), r(f.energy), r(f.health), r(f.life, 10), r(f.cool, 10), f.pad, r(f.lx), r(f.lz), r(f.yaw), r(f.mat.uniforms.uSeedF.value)]),
+      eggs: eggs.map((E) => [r(E.x), r(E.z), r(E.laid, 10), E.list.map((e) => e.map((v) => r(v, 10000)))]),
+      algae: Array.from(algae, (v) => Math.round(v * 255)) };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch (e) { /* storage not available here: the pond just starts fresh next time */ }
+}
+function lifeLoad() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (e) { d = null; }
+  if (!d || d.v !== 1) return false;
+  try {
+    worldH = d.t; lifeId = d.id;
+    for (const a of d.tads) makeTadpole({ id: a[0], born: a[1], dev: a[2], x: a[3], z: a[4], y: a[5], energy: a[6], health: a[7], green: !!a[8] }).seed = a[9];
+    for (const a of d.frogs) {
+      const pi = a[11] >= 0 && a[11] < NPAD && !padTaken(a[11]) ? a[11] : pads.findIndex((p, i) => i < NPAD && p.r > 0.09 && !padTaken(i));
+      if (pi < 0) continue;
+      const f = makeFrog({ id: a[0], born: a[1], dev: a[2], male: !!a[3], green: !!a[4], size: a[5], maxSize: a[6], energy: a[7], health: a[8], life: a[9], cool: a[10], seed: a[15],
+        tail: 1 - smooth01(LIFE.CLIMB, LIFE.TAILGONE, a[2]) });
+      if (!f) continue;
+      f.pad = pi; f.lx = a[12]; f.lz = a[13]; f.yaw = a[14];
+      if (f.male && f.dev < LIFE.ADULT) f.callT = 1e9;
+      const p = pads[pi], [x, z] = frogPadWorld(p, f.lx, f.lz); f.pos.set(x, frogGroundY(p, x, z, 0), z); p.weight = 0.35;
+    }
+    for (const a of d.eggs) eggs.push({ x: a[0], z: a[1], y: -0.012, laid: a[2], list: a[3] });
+    if (d.algae && d.algae.length === algae.length) for (let c = 0; c < algae.length; c++) algae[c] = d.algae[c] / 255;
+    return true;
+  } catch (e) { tadpoles.length = 0; eggs.length = 0; for (const f of frogs.slice()) removeFrog(f); return false; }
+}
+addEventListener('pagehide', () => lifeSave());
+document.addEventListener('visibilitychange', () => { if (document.hidden) lifeSave(); });
+
+// ---------------------------------------------------------------- the watched one: a little card with its age and state
+const KAN = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+function kanji(n) { n = Math.max(0, Math.floor(n)); if (n < 10) return KAN[n]; if (n < 100) { const t = Math.floor(n / 10), o = n % 10; return (t > 1 ? KAN[t] : '') + '十' + (o ? KAN[o] : ''); } return String(n); }
+function ageText(h) { h = Math.max(0, Math.floor(h)); const d = Math.floor(h / 24), hh = h % 24; return d ? `${d}日${hh}時間` : `${hh}時間`; }
+function stageText(o) {
+  const dv = o.dev;
+  if (tadpoles.includes(o)) {
+    if (o.climb) return '陸に上がる場所を探している';
+    if (dv >= LIFE.ARM) return '前足が出た';
+    if (dv >= LIFE.LEG1) return '後ろ足がそろった';
+    if (dv >= LIFE.LEG0) return '後ろ足がのびてきた';
+    if (dv >= LIFE.LEG0 - 60) return 'もうすぐ後ろ足が出る';
+    return dv < 60 ? 'ふ化したばかり' : '大きくなっている';
+  }
+  if (dv < LIFE.TAILGONE) return 'しっぽが短くなっていく';
+  if (dv < LIFE.ADULT) return '子ガエル';
+  return o.male ? (o.sac > 0.05 ? '鳴いている' : '大人のオス') : '大人のメス';
+}
+function condText(o) {
+  if (o.dying || o.st === 'dead') return '';
+  if (o.health < 0.45) return '弱っている';
+  if (o.energy < 0.18) return 'おなかがすいている';
+  if (o.energy > 0.75) return 'おなかいっぱい';
+  return '元気';
+}
+let fcNote = null, fcNoteT = 0, fcT = 0;
+function focusNote(text) { fcNote = text; fcNoteT = 4.5; }
+function focusLater(old) { setTimeout(() => { if (focus && focus.ref === old) focusLost(old); }, 4000); }
+function focusCard(dt) {
+  const el = $('fcard'); if (!el) return;
+  fcNoteT -= dt;
+  const show = view === 'frog' && focus && !OPTS.capture;
+  if (!show) { if (!el.hidden) el.hidden = true; return; }
+  if ((fcT -= dt) > 0) return; fcT = 0.25;
+  const o = focus.ref, isTad = focus.kind === 'tad';
+  const name = isTad ? 'オタマジャクシ' : o.dev < LIFE.ADULT ? '子ガエル' : `アマガエル（${o.male ? 'オス' : 'メス'}）`;
+  const len = isTad ? tadLen(o) * 100 : FROG_SCALE * o.size * 7.2;
+  $('fc-name').textContent = `${name}　No.${o.id}`;
+  $('fc-age').textContent = `生まれて ${ageText(worldH - o.born)}`;
+  const parts = [stageText(o), `${isTad ? '全長' : '体長'} ${len.toFixed(1)}cm`, condText(o)].filter(Boolean);
+  $('fc-info').textContent = fcNoteT > 0 && fcNote ? fcNote : parts.join('・');
+  if (el.hidden) el.hidden = false;
+}
+function lifeTitle() {
+  const el = document.querySelector('.title p'); if (!el) return;
+  const nf = frogs.filter((f) => !f.dying).length, nt = tadpoles.filter((T) => T.st !== 'dead').length, ne = eggCount();
+  const bits = ['鯉十二尾'];
+  if (nf) bits.push(`アマガエル${kanji(nf)}匹`);
+  if (nt) bits.push(`オタマジャクシ${kanji(nt)}匹`);
+  if (ne) bits.push(`卵${kanji(ne)}個`);
+  const s = bits.join('・'); if (el.textContent !== s) el.textContent = s;
+}
+// everything the "カエル" view can follow, in order: frogs, then tadpoles
+function watchList() { return [...frogs.filter((f) => !f.dying).map((f) => ['frog', f]), ...tadpoles.filter((T) => T.st !== 'dead').map((T) => ['tad', T])]; }
 
 function updateParticles(dt) {
   const A = partAttr.array; let n = 0;
@@ -6694,6 +7531,7 @@ function update(dt) {
   writePadAttrs(t);
   updateParticles(dt);
   updateFireflies(dt, t);
+  updateLife(dt, t);
   ambient(dt);
 }
 let PROF = null;
@@ -7189,7 +8027,7 @@ API.sndRender = async (sec = 8, which = 'main') => {
   SND.amb = sndAmbience(c);
   const cp = camera.position, ev = [];
   const at = (t, fn) => { SND.tOver = t; fn(); };
-  const f0 = Object.assign({}, frogs[0], { pos: V3(cp.x + 0.6, cp.y - 0.3, cp.z - 0.6) });
+  const f0 = Object.assign({ male: true, size: 1, i: 0 }, frogs[0] || {}, { pos: V3(cp.x + 0.6, cp.y - 0.3, cp.z - 0.6) });
   if (which === 'swim') {
     // a frog swimming past ~0.6 m away: kicks every 0.6 s, then a big frog, then climbing out
     const x = cp.x, z = cp.z - 0.6;
@@ -7235,12 +8073,24 @@ let hintHidden = false;
 function hideHint() { if (!hintHidden) { hintHidden = true; hintEl.classList.add('gone'); } }
 function press(group, id) { for (const b of document.querySelectorAll(`#${group} button, [aria-label="${group}"] button`)) b.setAttribute('aria-pressed', String(b.id === id)); }
 function pressIn(ids, id) { for (const x of ids) $(x).setAttribute('aria-pressed', String(x === id)); }
-function frogLabel() { $('v-frog').innerHTML = view === 'frog' ? `カエル<span class="cnt">${focusIdx + 1}/${frogs.length}</span>` : 'カエル'; }
+function frogLabel() {
+  const b = $('v-frog'); if (!b) return;
+  if (view !== 'frog' || !focus) { b.textContent = 'カエル'; return; }
+  const list = focus.kind === 'frog' ? frogs.filter((f) => !f.dying) : tadpoles.filter((T) => T.st !== 'dead');
+  b.innerHTML = `${focus.kind === 'frog' ? 'カエル' : 'オタマ'}<span class="cnt">${Math.max(1, list.indexOf(focus.ref) + 1)}/${list.length}</span>`;
+}
 $('v-pond').onclick = () => { pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); setView('pond'); frogLabel(); };
 $('v-frog').onclick = () => {
-  if (view === 'frog') { focusIdx = (focusIdx + 1) % frogs.length; frog = frogs[focusIdx]; }
+  const list = watchList(); if (!list.length) return;
+  let k = focus ? list.findIndex(([, o]) => o === focus.ref) : -1;
+  if (view === 'frog' || k < 0) k = (k + 1) % list.length;
+  setFocus(list[k][0], list[k][1]);
   pressIn(['v-pond', 'v-frog', 'v-low'], 'v-frog'); setView('frog'); frogLabel();
 };
+// what a tap on the water drops: the koi's floating pellets, or flakes that sink for the tadpoles
+let feedMode = 'koi';
+for (const [id, mode] of [['f-koi', 'koi'], ['f-tad', 'tad']]) $(id).onclick = () => { feedMode = mode; pressIn(['f-koi', 'f-tad'], id); };
+setInterval(frogLabel, 1000);
 $('v-low').onclick = () => { pressIn(['v-pond', 'v-frog', 'v-low'], 'v-low'); setView('low'); frogLabel(); };
 const T_IDS = ['t-morning', 't-noon', 't-evening', 't-night', 't-live'];
 function liveLabel() {
@@ -7328,7 +8178,8 @@ function resize(keepDPR) {
 addEventListener('resize', () => { clearTimeout(resize.t); resize.t = setTimeout(() => { resize(false); uiSetBarH(); }, 120); });
 
 // ================================================================= boot
-initFrogs();
+if (OPTS.capture || !lifeLoad()) lifeFresh();
+lifeTitle();
 setView('pond', true);
 allocTargets();
 // settle simulation state
@@ -7427,9 +8278,10 @@ API.step = (n = 1) => { const dt = 1 / OPTS.fps; for (let i = 0; i < n; i++) { u
 API.profile = () => { PROF = []; PROF.t = performance.now(); mark('start'); update(1 / 30); render(1 / 30); const r = PROF; PROF = null; return r.map(x => x[0] + ':' + Math.round(x[1])).join(' '); };
 API.dbg_str = () => ({ striders, strStats, frogs });
 API.dbg_ff = () => fireflies;
+API.dbg_life = () => ({ tadpoles, eggs, frogs, tfood, algae, algaeCap, lifeStats, get worldH() { return worldH; }, LIFE, frogPool });
 API.dbg_veg2 = () => ({ lotus, lotusFloat, lotusStand, willowTips, LOTUS0, WILLOW });
 API.dbg_veg = () => ({ fallen, weeds, gust, plumes: NPLUME, NWEED, duck, duckRafts, hishi, fluff, typhaS, TYPHA, NDUCK, SAZANKA, HIGAN, TSUWA, FERNS, NCARD, ribVerts: RIB.p.length / 3 });
-API.dbg = { pondGrad, terrainH, polarAt, pondR, SUSUKI, LANT, TREE_DEF, frogs, pads, get drops() { return dropCount; }, RES, koi, food, pondSDF, koiSegDist, SEG, feed, koiEnds, KOI_R, KOI_H };
+API.dbg = { pondGrad, terrainH, polarAt, pondR, SUSUKI, LANT, TREE_DEF, frogs, pads, ROCKS, camera, get drops() { return dropCount; }, RES, koi, food, pondSDF, koiSegDist, SEG, feed, koiEnds, KOI_R, KOI_H };
 API.simMax = () => { const buf = new Uint16Array(SW * SH * 4); renderer.readRenderTargetPixels(simA, 0, 0, SW, SH, buf); let m = 0, mi = 0; for (let i = 0; i < SW * SH; i++) { const v = Math.abs(THREE.DataUtils.fromHalfFloat(buf[i * 4])); if (v > m) { m = v; mi = i; } } return { max: m, x: DOMAIN.x + (mi % SW + 0.5) / SW * DOMAIN.w, z: DOMAIN.z + (Math.floor(mi / SW) + 0.5) / SH * DOMAIN.h, SW, SH, minR: MIN_DROP_R }; };
 API.tick = (n = 1) => { const dt = 1 / OPTS.fps; for (let i = 0; i < n; i++) update(dt); dropQueue.length = Math.min(dropQueue.length, 16); return G.uTime.value; };
 API.grab = () => renderer.domElement.toDataURL('image/jpeg', 0.92);
@@ -7454,10 +8306,28 @@ API.cmd = (name, ...a) => {
   if (name === 'jump') { frog.next = frog.t; return frog.state; }
   if (name === 'cam') { Object.assign(camGoal, a[0]); if (a[1]) Object.assign(cam, camGoal); return cam; }
   if (name === 'frogcam') { view = 'frog'; const az = Math.atan2(Math.cos(frog.yaw + a[0]), Math.sin(frog.yaw + a[0])); Object.assign(camGoal, { az, el: a[1], dist: a[2], fov: a[3] || 38, tx: frog.pos.x, ty: frogTY(frog), tz: frog.pos.z }); Object.assign(cam, camGoal); updateCamera(0); dof.ap = dof.apGoal; return true; }
-  if (name === 'frog') return { pos: frog.pos.toArray(), yaw: frog.yaw, state: frog.state, pad: frog.pad, focus: focusIdx };
+  if (name === 'frog') return frog ? { pos: frog.pos.toArray(), yaw: frog.yaw, state: frog.state, pad: frog.pad, focus: frogs.indexOf(frog) } : null;
   if (name === 'frogs') return frogs.map((f) => ({ pos: f.pos.toArray().map((v) => +v.toFixed(3)), state: f.state, pad: f.pad, sac: +f.sac.toFixed(2) }));
-  if (name === 'focus') { focusIdx = a[0]; frog = frogs[focusIdx]; return focusIdx; }
-  if (name === 'call') { const f = frogs[a[0] ?? focusIdx]; f.callT = 0; return f.male; }
+  if (name === 'focus') { setFocus('frog', frogs[a[0]]); return a[0]; }
+  if (name === 'focustad') { setFocus('tad', tadpoles[a[0] ?? 0]); view = 'frog'; setView('frog', true); return !!focus; }
+  if (name === 'call') { const f = frogs[a[0] ?? 0] || frog; f.callT = 0; return f.male; }
+  // the five grown frogs of earlier versions, with the life cycle switched off (for the behaviour tests)
+  if (name === 'testfrogs') {
+    lifeOff = true; tadpoles.length = 0; eggs.length = 0; tfood.length = 0; tadGeo.instanceCount = tadFinGeo.instanceCount = 0; eggGeo.instanceCount = 0; tfGeo.instanceCount = 0;
+    for (const f of frogs.slice()) removeFrog(f);
+    frogSerial = 0;
+    for (let i = 0; i < 5; i++) makeFrog({ male: i !== 1 && i !== 3, green: i < 2, size: [1.0, 1.5, 1.07, 2.0, 1.03][i], seed: i * 0.37 + 0.11,
+      next: [6.5, 11, 15.5, 8.5, 13][i], blinkT: 1.5 + i * 1.3, callT: 3.5 + i * 5.5, breathW: [1.6, 1.85, 1.45, 1.7, 1.55][i], throatW: [9.0, 8.2, 9.6, 8.6, 9.3][i],
+      swimIn: 14 + i * 7 + 5, fullT: 4 + i * 3, cool: 1e9 });
+    initFrogs(); setFocus('frog', frogs[0]);
+    return frogs.length;
+  }
+  if (name === 'life') { lifeOff = a[0] === 'off'; return !lifeOff; }
+  if (name === 'lifefresh') { lifeOff = false; lifeFresh(); return tadpoles.length; }
+  if (name === 'spawn') { const f = frogs[a[0] ?? 0]; if (!f) return null; startSpawn(f); return f.spawn ? [f.spawn.x, f.spawn.z] : null; }
+  if (name === 'tfeed') { feedTadpoles(a[0], a[1]); return tfood.length; }
+  if (name === 'lifereload') { lifeSave(); for (const f of frogs.slice()) removeFrog(f); tadpoles.length = 0; eggs.length = 0; tfood.length = 0; return lifeLoad(); }
+  if (name === 'eggs') { const E = layEggs(a[0], a[1], a[2] ?? 12, { laid: worldH - (a[3] ?? 0) }); return E.list.length; }
   if (name === 'koi') return koi.map(k => [k.pos.x.toFixed(2), k.pos.y.toFixed(2), k.pos.z.toFixed(2)]);
   if (name === 'pads') return pads.map(p => [p.x.toFixed(2), p.z.toFixed(2), p.r.toFixed(3)]);
   if (name === 'debug') { const tex = { caus: causRT, surf: surfRT, mask: padMaskRT, refr: refrRT, refl: reflRT, sim: simA, shadow: shadowRT }[a[0]]; finalMat.uniforms.uDbgOn.value = tex ? 1 : 0; finalMat.uniforms.uDbg.value = tex ? tex.texture : null; finalMat.uniforms.uDbgScale.value = a[1] || 1; return !!tex; }

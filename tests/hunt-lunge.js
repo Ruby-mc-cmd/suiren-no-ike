@@ -1,4 +1,5 @@
 (() => {
+  __pond.cmd('testfrogs');   // the five grown frogs, with the life cycle switched off
   const P = __pond, V = P.dbg_str(), F = V.frogs, st = V.strStats;
   const out = [];
   const D = [0.06, 0.10, 0.14, 0.18, 0.22, 0.27];
