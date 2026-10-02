@@ -1,0 +1,12 @@
+# local captures and scratch output
+shots/
+vid/
+out/
+tests/out/
+*.mp4
+*.log
+/*.json
+/*.jpg
+__pycache__/
+# three.js is loaded from the CDN at runtime; the headless harness wants a local copy (see README)
+three.module.min.js

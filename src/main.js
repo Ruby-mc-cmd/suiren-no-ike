@@ -1,0 +1,7203 @@
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
+
+/* =====================================================================
+   睡蓮の池 — koi pond with water lilies and three blue Japanese tree frogs
+   ===================================================================== */
+const OPTS = Object.assign({ capture: false, quality: null, fps: 30 }, window.__POND_OPTS || {});
+const API = (window.__pond = { ready: false, error: null });
+const $ = (id) => document.getElementById(id);
+if (OPTS.capture) document.body.classList.add('capture');
+
+// ---------------------------------------------------------------- utils
+function mulberry32(a) {
+  return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+let rnd = mulberry32(20261001);
+const rr = (a, b) => a + (b - a) * rnd();
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const TAU = Math.PI * 2;
+const wrapAngle = (a) => { while (a > Math.PI) a -= TAU; while (a < -Math.PI) a += TAU; return a; };
+function hash2i(ix, iz) { let h = (Math.imul(ix | 0, 374761393) + Math.imul(iz | 0, 668265263)) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
+function vnoise(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx), uz = fz * fz * (3 - 2 * fz);
+  const a = hash2i(ix, iz), b = hash2i(ix + 1, iz), c = hash2i(ix, iz + 1), d = hash2i(ix + 1, iz + 1);
+  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
+}
+function fbm(x, z, oct = 4) { let s = 0, a = 0.5, f = 1; for (let i = 0; i < oct; i++) { s += a * (vnoise(x * f + i * 17.1, z * f - i * 9.3) * 2 - 1); f *= 2.03; a *= 0.5; } return s; }
+const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+
+// ---------------------------------------------------------------- quality
+const coarse = matchMedia('(pointer: coarse)').matches;
+const TIER = OPTS.quality || ((coarse || Math.min(innerWidth, innerHeight) < 620) ? 'low' : 'high');
+const Q = TIER === 'low'
+  ? { dpr: Math.min(devicePixelRatio || 1, 1.5), msaa: 0, sim: [352, 234], surf: [440, 292], caus: [1024, 680], refl: 0.4, rip: 4, steps: 72, chroma: false }
+  : { dpr: Math.min(devicePixelRatio || 1, 1.5), msaa: 4, sim: [576, 382], surf: [704, 468], caus: [1536, 1020], refl: 0.5, rip: 5, steps: 110, chroma: true };
+if (OPTS.capture) Q.dpr = OPTS.dpr || 1;
+const PIX_BUDGET = TIER === 'low' ? 1.1e6 : 2.6e6;
+function pickDPR() {
+  if (OPTS.capture) return Q.dpr;
+  return Math.max(0.6, Math.min(Q.dpr, Math.sqrt(PIX_BUDGET / Math.max(innerWidth * innerHeight, 1))));
+}
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+$('i-sim') && ($('i-sim').textContent = `${Q.sim[0]}×${Q.sim[1]}`);
+$('i-caus') && ($('i-caus').textContent = `${Q.surf[0]}×${Q.surf[1]}`);
+
+// ---------------------------------------------------------------- renderer
+const canvas = $('scene');
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, stencil: false, powerPreference: 'high-performance', preserveDrawingBuffer: !!OPTS.capture });
+} catch (e) {
+  API.error = 'webgl';
+  $('loading').innerHTML = '<div>この端末では WebGL2 を使えないため、池を描けませんでした<small>Chrome・Safari・Edge の最新版でお試しください</small></div>';
+  throw e;
+}
+renderer.setPixelRatio(pickDPR());
+renderer.setSize(innerWidth, innerHeight, false);
+renderer.autoClear = false;
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
+THREE.ColorManagement.enabled = false;
+
+const LAYER = { MAIN: 0, REFL: 1, REFR: 2, MASK: 3, SHADOW: 4 };
+const DOMAIN = { x: -5.0, z: -3.9, w: 11.6, h: 7.7 };
+
+// ---------------------------------------------------------------- global uniforms
+const G = {
+  uTime: { value: 0 },
+  uSunDir: { value: V3(0, 1, 0) },
+  uSunCol: { value: V3(1, 1, 1) },
+  uSkyTop: { value: V3(0.24, 0.44, 0.84) },
+  uSkyHor: { value: V3(0.7, 0.79, 0.9) },
+  uDomain: { value: new THREE.Vector4(DOMAIN.x, DOMAIN.z, DOMAIN.w, DOMAIN.h) },
+  uSigA: { value: V3(1.25, 0.52, 0.82) },
+  uSigS: { value: V3(0.34, 0.38, 0.32) },
+  uScat: { value: V3(0.02, 0.05, 0.04) },
+  uCamPos: { value: V3() },
+  uPass: { value: 0 },
+  uFogDen: { value: 0.018 },
+  uFloorTex: { value: null },
+  uSurf: { value: null },
+  uCaustic: { value: null },
+  uPadMask: { value: null },
+  uKoiA: { value: Array.from({ length: 12 }, () => new THREE.Vector4(0, 9, 0, 0)) },
+  uKoiB: { value: Array.from({ length: 12 }, () => new THREE.Vector4(0.5, 1, 0, 0)) },
+  uKoiN: { value: 0 },
+  uWind: { value: new THREE.Vector2(0.86, -0.51) },
+  uRipAmp: { value: 1.0 },
+  uGust: { value: 1.0 },
+  uWindK: { value: 0 },
+  // water striders standing on the surface: centre, heading, size | the six feet (two per vec4: front, middle, hind pairs)
+  uStrN: { value: 0 },
+  uStrP: { value: Array.from({ length: 4 }, () => new THREE.Vector4(99, 99, 0, 1)) },
+  uStrT: { value: Array.from({ length: 12 }, () => new THREE.Vector4(99, 99, 99, 99)) },
+  uRipA: { value: [0.0045, 0.0045, 0.0056, 0.0016, 0.0005] },
+  uGw: { value: [new THREE.Vector4(0.86, -0.51, 1.7, 0.0026), new THREE.Vector4(0.62, -0.78, 1.05, 0.0017), new THREE.Vector4(0.97, -0.24, 0.72, 0.0011), new THREE.Vector4(0.45, -0.89, 0.48, 0.0007)] },
+  uFrogA: { value: Array.from({ length: 5 }, () => new THREE.Vector4(0, -10, 0, -1)) },
+  uFrogB: { value: Array.from({ length: 5 }, () => new THREE.Vector4(0.03, 0, 0, 0)) },
+  uFrogC: { value: Array.from({ length: 5 }, () => new THREE.Vector4(0, -10, 0, 0)) },
+  uRock: { value: Array.from({ length: 96 }, () => new THREE.Vector4(99, 99, 0.01, 0)) },
+  uRockN: { value: 0 },
+  uTrees: { value: Array.from({ length: 9 }, () => new THREE.Vector2(99, 99)) },
+  uShadowMap: { value: null }, uShadowMat: { value: new THREE.Matrix4() }, uShadowOn: { value: 0 }, uShadowTexel: { value: 1 / 2048 },
+};
+
+// ---------------------------------------------------------------- light presets
+const LIGHTS = {
+  morning: { el: 21, az: -112, col: [1.0, 0.84, 0.66], I: 3.0, top: [0.30, 0.48, 0.80], hor: [0.86, 0.82, 0.78], exp: 1.05, fog: 0.016 },
+  noon: { el: 54, az: 118, col: [1.0, 0.965, 0.91], I: 3.1, top: [0.24, 0.44, 0.84], hor: [0.70, 0.79, 0.90], exp: 0.88, fog: 0.016 },
+  evening: { el: 12, az: 34, col: [1.0, 0.60, 0.32], I: 3.2, top: [0.17, 0.25, 0.50], hor: [0.98, 0.66, 0.46], exp: 1.18, fog: 0.011 },
+};
+const lightCur = JSON.parse(JSON.stringify(LIGHTS.noon));
+let lightFrom = JSON.parse(JSON.stringify(LIGHTS.noon)), lightTo = LIGHTS.noon, lightT = 1, lightName = 'noon';
+let exposure = 1;
+function applyLight(L) {
+  const el = L.el * Math.PI / 180, az = L.az * Math.PI / 180;
+  G.uSunDir.value.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)).normalize();
+  G.uSunCol.value.set(L.col[0] * L.I, L.col[1] * L.I, L.col[2] * L.I);
+  G.uSkyTop.value.set(L.top[0], L.top[1], L.top[2]);
+  G.uSkyHor.value.set(L.hor[0], L.hor[1], L.hor[2]);
+  const lum = 0.42 * L.I * Math.max(Math.sin(el), 0.12) + 0.55;
+  G.uScat.value.set(0.010 * (0.6 + 0.4 * L.col[0]), 0.030 * L.col[1], 0.022 * L.col[2]).multiplyScalar(lum);
+  G.uFogDen.value = L.fog;
+  exposure = L.exp;
+}
+function stepLight(dt) {
+  if (lightT >= 1) return;
+  lightT = Math.min(1, lightT + dt / 2.2);
+  const k = smooth(0, 1, lightT);
+  for (const key of ['el', 'az', 'I', 'exp', 'fog']) lightCur[key] = lerp(lightFrom[key], lightTo[key], k);
+  for (const key of ['col', 'top', 'hor']) for (let i = 0; i < 3; i++) lightCur[key][i] = lerp(lightFrom[key][i], lightTo[key][i], k);
+  applyLight(lightCur);
+}
+function setLight(name, instant) {
+  lightFrom = JSON.parse(JSON.stringify(lightCur)); lightTo = LIGHTS[name]; lightT = instant ? 1 : 0; lightName = name;
+  if (instant && typeof FLOWER_CLOSE !== 'undefined') FLOWER_CLOSE.value = FLOWER_CLOSE_AT[name];
+  if (instant) { Object.assign(lightCur, JSON.parse(JSON.stringify(LIGHTS[name]))); applyLight(lightCur); }
+}
+applyLight(lightCur);
+
+// ---------------------------------------------------------------- pond shape & terrain (CPU)
+const POND = { a: 4.3, b: 3.0, n: 2.2 };
+const angD = (a, c) => Math.atan2(Math.sin(a - c), Math.cos(a - c));
+const gbump = (th, c, w) => { const d = angD(th, c) / w; return Math.exp(-d * d); };
+// two basins joined by a pinched neck, a cove on the near-left, a bay on the right: still star-shaped about the origin
+function pondR(th) {
+  const c = Math.abs(Math.cos(th)), s = Math.abs(Math.sin(th));
+  const r0 = Math.pow(Math.pow(c / POND.a, POND.n) + Math.pow(s / POND.b, POND.n), -1 / POND.n);
+  let m = 1 - 0.50 * gbump(th, Math.PI / 2 - 0.10, 0.5) - 0.38 * gbump(th, -Math.PI / 2 + 0.25, 0.4) + 0.12 * gbump(th, 0.2, 0.5) - 0.18 * gbump(th, Math.PI + 0.35, 0.3);
+  m *= 1 + 0.08 * Math.cos(th - 0.3);
+  return r0 * m * (1 + 0.04 * Math.sin(3 * th + 1.3) + 0.03 * Math.sin(5 * th + 0.4) + 0.018 * Math.sin(9 * th + 2.1) + 0.01 * Math.sin(15 * th + 0.7));
+}
+// exact signed distance (negative inside) sampled on a grid, bilinear lookup
+const SG = (() => {
+  const x0 = -9.8, z0 = -7.6, h = 0.05, nx = 392, nz = 305, N = 640;
+  const bx = new Float32Array(N + 1), bz = new Float32Array(N + 1);
+  for (let i = 0; i <= N; i++) { const th = i / N * TAU, r = pondR(th); bx[i] = Math.cos(th) * r; bz[i] = Math.sin(th) * r; }
+  const d = new Float32Array(nx * nz);
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const x = x0 + i * h, z = z0 + j * h, r = Math.hypot(x, z), R = pondR(Math.atan2(z, x));
+    if (r > 8.7) { d[j * nx + i] = r - R; continue; }
+    let m = 1e9;
+    for (let k = 0; k < N; k++) {
+      const ax = bx[k], az = bz[k], ex = bx[k + 1] - ax, ez = bz[k + 1] - az;
+      let t = ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez); t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const qx = x - ax - ex * t, qz = z - az - ez * t, q = qx * qx + qz * qz;
+      if (q < m) m = q;
+    }
+    d[j * nx + i] = r < R ? -Math.sqrt(m) : Math.sqrt(m);
+  }
+  return { x0, z0, h, nx, nz, d };
+})();
+function pondSDF(x, z) {
+  let u = (x - SG.x0) / SG.h, v = (z - SG.z0) / SG.h, ex = 0, ez = 0;
+  const mu = SG.nx - 1.001, mv = SG.nz - 1.001;
+  if (u < 0) { ex = u; u = 0; } else if (u > mu) { ex = u - mu; u = mu; }
+  if (v < 0) { ez = v; v = 0; } else if (v > mv) { ez = v - mv; v = mv; }
+  const i = u | 0, j = v | 0, fu = u - i, fv = v - j, k = j * SG.nx + i, D = SG.d;
+  const val = (D[k] * (1 - fu) + D[k + 1] * fu) * (1 - fv) + (D[k + SG.nx] * (1 - fu) + D[k + SG.nx + 1] * fu) * fv;
+  return (ex || ez) ? val + Math.hypot(ex, ez) * SG.h : val;
+}
+function pondGrad(x, z) { const e = 0.04; return [(pondSDF(x + e, z) - pondSDF(x - e, z)) / (2 * e), (pondSDF(x, z + e) - pondSDF(x, z - e)) / (2 * e)]; }
+// move a point along the SDF gradient until it sits at signed distance `target`
+function snapToSdf(x, z, target) {
+  for (let it = 0; it < 3; it++) { const sd = pondSDF(x, z); const [gx, gz] = pondGrad(x, z); const gl = Math.hypot(gx, gz) || 1; x -= gx / gl * (sd - target); z -= gz / gl * (sd - target); }
+  return [x, z];
+}
+const polarAt = (th, off) => { const R = pondR(th) + off; return { x: Math.cos(th) * R, z: Math.sin(th) * R }; };
+const LANT = polarAt(-1.28, 0.62);
+const SUBROCKS = [
+  { x: -0.95, z: 0.30, r: 0.34, h: 0.17 }, { x: 1.15, z: -0.55, r: 0.40, h: 0.19 }, { x: 0.30, z: 0.95, r: 0.22, h: 0.11 },
+  { x: -1.60, z: -0.62, r: 0.30, h: 0.15 }, { x: 1.70, z: 0.62, r: 0.26, h: 0.13 }, { x: -0.10, z: -0.25, r: 0.16, h: 0.07 },
+  { x: 2.90, z: 0.50, r: 0.42, h: 0.20 }, { x: 3.90, z: -0.80, r: 0.34, h: 0.17 }, { x: -2.70, z: 0.70, r: 0.36, h: 0.16 }, { x: -2.95, z: -1.00, r: 0.28, h: 0.13 },
+  { x: 4.30, z: 1.30, r: 0.30, h: 0.14 }, { x: 2.30, z: -1.55, r: 0.34, h: 0.16 }, { x: 1.40, z: -1.30, r: 0.20, h: 0.09 }, { x: 3.30, z: 1.60, r: 0.26, h: 0.12 },
+];
+function rimH(x, z) { return 0.075 + 0.025 * fbm(x * 1.7 + 11.0, z * 1.7 - 4.0, 3); }
+function terrainH(x, z) {
+  const d = pondSDF(x, z);
+  const rim = rimH(x, z);
+  if (d < 0) {
+    const t = smooth(0.0, 1.1, -d);
+    let depth = 0.16 + 0.50 * Math.pow(t, 0.9) + 0.055 * fbm(x * 0.8 + 3.1, z * 0.8 - 1.7, 4) + 0.22 * t * (fbm(x * 0.33 + 9.0, z * 0.33 - 3.0, 3) - 0.45);
+    for (const r of SUBROCKS) { const q = Math.hypot(x - r.x, z - r.z) / r.r; if (q < 1) { const k = 1 - q * q; depth -= r.h * k * k; } }
+    const bank = smooth(-0.14, 0.0, d);
+    return lerp(-depth, rim, bank * bank);
+  }
+  const out = smooth(0.0, 2.2, d);
+  return rim + 0.12 * out + 0.07 * fbm(x * 0.45 - 7.0, z * 0.45 + 2.0, 4) * out + 0.01 * fbm(x * 6.0, z * 6.0, 2);
+}
+
+// floor texture: R = terrain height, G = pond SDF
+const FW = 704, FH = 468;
+const floorTex = (() => {
+  const data = new Uint16Array(FW * FH * 4);
+  const toH = THREE.DataUtils.toHalfFloat;
+  for (let j = 0; j < FH; j++) for (let i = 0; i < FW; i++) {
+    const x = DOMAIN.x + (i + 0.5) / FW * DOMAIN.w, z = DOMAIN.z + (j + 0.5) / FH * DOMAIN.h;
+    const k = (j * FW + i) * 4;
+    data[k] = toH(terrainH(x, z)); data[k + 1] = toH(Math.max(-8, Math.min(8, pondSDF(x, z)))); data[k + 2] = 0; data[k + 3] = toH(1);
+  }
+  const t = new THREE.DataTexture(data, FW, FH, THREE.RGBAFormat, THREE.HalfFloatType);
+  t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.needsUpdate = true;
+  return t;
+})();
+G.uFloorTex.value = floorTex;
+
+// ================================================================= GLSL
+const GL_COMMON = /* glsl */`
+#define PI 3.141592653589793
+#define IOR 1.333
+uniform float uTime;
+uniform vec3 uSunDir;
+uniform vec3 uSunCol;
+uniform vec3 uSkyTop;
+uniform vec3 uSkyHor;
+uniform vec4 uDomain;
+uniform vec3 uSigA;
+uniform vec3 uSigS;
+uniform vec3 uScat;
+uniform vec3 uCamPos;
+uniform float uPass;
+uniform float uFogDen;
+uniform float uWindK;
+#define IS_REFR (abs(uPass - 2.0) < 0.5)
+#define IS_SHADOW (uPass > 2.5)
+float sat(float x){ return clamp(x, 0.0, 1.0); }
+vec2 domUV(vec2 xz){ return (xz - uDomain.xy) / uDomain.zw; }
+float hash11(float p){ p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+vec2 hash22(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
+float hash13(vec3 p3){ p3 = fract(p3 * .1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
+float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y); }
+float vnoise3(vec3 p){ vec3 i = floor(p), f = fract(p); vec3 u = f*f*(3.0-2.0*f);
+  float a = hash13(i), b = hash13(i + vec3(1.0,0.0,0.0)), c = hash13(i + vec3(0.0,1.0,0.0)), d = hash13(i + vec3(1.0,1.0,0.0));
+  float e = hash13(i + vec3(0.0,0.0,1.0)), f2 = hash13(i + vec3(1.0,0.0,1.0)), g = hash13(i + vec3(0.0,1.0,1.0)), h = hash13(i + vec3(1.0,1.0,1.0));
+  return mix(mix(mix(a, b, u.x), mix(c, d, u.x), u.y), mix(mix(e, f2, u.x), mix(g, h, u.x), u.y), u.z); }
+float fbm(vec2 p){ float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++){ s += a * vnoise(p); p = mat2(1.6, 1.2, -1.2, 1.6) * p; a *= 0.5; } return s; }
+float fbm3(vec3 p){ float s = 0.0, a = 0.5; for (int i = 0; i < 4; i++){ s += a * vnoise3(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= 0.5; } return s; }
+vec3 noised(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
+  vec2 du = 30.0*f*f*(f*(f-2.0)+1.0);
+  vec2 ga = hash22(i)*2.0-1.0, gb = hash22(i+vec2(1.0,0.0))*2.0-1.0, gc = hash22(i+vec2(0.0,1.0))*2.0-1.0, gd = hash22(i+vec2(1.0,1.0))*2.0-1.0;
+  float va = dot(ga, f), vb = dot(gb, f-vec2(1.0,0.0)), vc = dot(gc, f-vec2(0.0,1.0)), vd = dot(gd, f-vec2(1.0,1.0));
+  return vec3(va + u.x*(vb-va) + u.y*(vc-va) + u.x*u.y*(va-vb-vc+vd),
+              ga + u.x*(gb-ga) + u.y*(gc-ga) + u.x*u.y*(ga-gb-gc+gd) + du*(u.yx*(va-vb-vc+vd) + vec2(vb,vc) - va));
+}
+// x = distance to cell edge, y = cell id, z = distance to feature point
+vec3 voronoiE(vec2 x){
+  vec2 n = floor(x), f = fract(x);
+  vec2 mg = vec2(0.0), mr = vec2(0.0); float md = 8.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++){
+    vec2 g = vec2(float(i), float(j)); vec2 o = hash22(n + g); vec2 r = g + o - f; float d = dot(r, r);
+    if (d < md){ md = d; mr = r; mg = g; } }
+  float ed = 8.0;
+  for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++){
+    vec2 g = mg + vec2(float(i), float(j)); vec2 o = hash22(n + g); vec2 r = g + o - f;
+    if (dot(mr - r, mr - r) > 0.00001) ed = min(ed, dot(0.5 * (mr + r), normalize(r - mr))); }
+  return vec3(ed, hash12(n + mg), sqrt(md));
+}
+// xy = offset to nearest feature, z = distance, w = id
+vec4 voronoiV(vec2 x){
+  vec2 n = floor(x), f = fract(x); float md = 8.0; vec2 mr = vec2(0.0), mg = vec2(0.0);
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++){
+    vec2 g = vec2(float(i), float(j)); vec2 o = hash22(n + g); vec2 r = g + o - f; float d = dot(r, r);
+    if (d < md){ md = d; mr = r; mg = g; } }
+  return vec4(mr, sqrt(md), hash12(n + mg));
+}
+float schlick(float c){ float m = 1.0 - sat(c); float m2 = m * m; return 0.02 + 0.98 * m2 * m2 * m; }
+vec3 sunInWater(){ return refract(-uSunDir, vec3(0.0, 1.0, 0.0), 1.0 / IOR); }
+vec3 skyColor(vec3 d, float disk){
+  float y = d.y;
+  vec3 col = mix(uSkyHor, uSkyTop, pow(sat(y), 0.45));
+  col = mix(col, uSkyHor * 0.5 + vec3(0.02, 0.025, 0.02), sat(-y * 5.0));
+  float sd = max(dot(d, uSunDir), 0.0);
+  col += uSunCol * (0.05 * pow(sd, 5.0) + 0.22 * pow(sd, 60.0));
+  if (y > 0.0) {
+    vec2 cp = d.xz / (y + 0.10) * 0.8 + vec2(uTime * 0.004, uTime * 0.0016);
+    float c = fbm(cp * 1.25);
+    c = smoothstep(0.50, 0.82, c) * smoothstep(0.0, 0.22, y);
+    float lum = max(max(uSunCol.r, uSunCol.g), 1e-3);
+    vec3 cc = mix(uSkyHor * 1.08, (uSunCol / lum) * (0.95 + 0.35 * pow(sd, 3.0)), 0.6);
+    col = mix(col, cc, c * 0.85);
+  }
+  col += uSunCol * smoothstep(0.99955, 0.99985, sd) * 14.0 * disk;
+  return col;
+}
+// apparent (refraction-corrected) position of an underwater point seen from uCamPos through flat water
+vec3 apparentPos(vec3 P){
+  float d = -P.y;
+  if (d <= 0.0) return P;
+  vec3 C = uCamPos;
+  float h = max(C.y, 0.02);
+  vec2 dv = P.xz - C.xz;
+  float D = length(dv);
+  if (D < 1e-4) return vec3(P.x, -d / IOR, P.z);
+  vec2 dir = dv / D;
+  float a = D * h / (h + d / IOR);
+  for (int i = 0; i < 5; i++){
+    float ra = sqrt(a * a + h * h); float b = D - a; float rb = sqrt(b * b + d * d);
+    float f = a / ra - IOR * b / rb;
+    float fp = h * h / (ra * ra * ra) + IOR * d * d / (rb * rb * rb);
+    a = clamp(a - f / fp, 0.0, D);
+  }
+  vec3 S = vec3(C.x + dir.x * a, 0.0, C.z + dir.y * a);
+  float La = length(S - C);
+  float Lw = length(P - S);
+  return C + (S - C) * ((La + Lw) / La);
+}
+vec3 fogCol(){ return mix(uSkyHor, uSkyTop, 0.32) * 0.86; }
+vec3 fogLand(vec3 col, vec3 P){ float dist = length(P - cameraPosition); return mix(col, fogCol(), 1.0 - exp(-dist * uFogDen)); }
+float ggx(float NdH, float a){ float a2 = a * a; float d = NdH * NdH * (a2 - 1.0) + 1.0; return min(a2 / (PI * max(d * d, 1e-6)), 400.0); }
+`;
+
+const GL_BUMP = /* glsl */`
+vec3 bumpN(vec3 N, vec3 P, float h){
+  vec3 dpx = dFdx(P), dpy = dFdy(P); float dhx = dFdx(h), dhy = dFdy(h);
+  vec3 r1 = cross(dpy, N), r2 = cross(N, dpx); float det = dot(dpx, r1);
+  vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
+  return normalize(abs(det) * N - grad);
+}
+`;
+
+const GL_STRIDER = /* glsl */`
+uniform int uStrN; uniform vec4 uStrP[4]; uniform vec4 uStrT[12];
+// slope of the water around the striders' feet: each foot presses a small round dimple into the surface
+vec2 striderDimples(vec2 p){
+  vec2 g = vec2(0.0);
+  for (int i = 0; i < 4; i++){
+    if (i >= uStrN) break;
+    vec4 s = uStrP[i];
+    vec2 dq = p - s.xy;
+    if (dot(dq, dq) > 0.0013 * s.w * s.w) continue;
+    for (int k = 0; k < 3; k++){
+      vec4 tt = uStrT[i * 3 + k];
+      float sg = (k == 0 ? 0.0015 : 0.0028) * s.w, D = (k == 0 ? 0.00045 : 0.0010) * s.w;
+      vec2 r0 = p - tt.xy, r1 = p - tt.zw;
+      g += 2.0 * D / (sg * sg) * (exp(-dot(r0, r0) / (sg * sg)) * r0 + exp(-dot(r1, r1) / (sg * sg)) * r1);
+    }
+  }
+  return g;
+}
+`;
+const GL_UNDER = /* glsl */`
+#define HAS_FLOORTEX
+${GL_STRIDER}
+uniform sampler2D uCaustic;
+uniform sampler2D uPadMask;
+uniform sampler2D uFloorTex;
+uniform vec4 uKoiA[12];
+uniform vec4 uKoiB[12];
+uniform int uKoiN;
+float floorAt(vec2 xz){ return texture(uFloorTex, domUV(xz)).r; }
+float koiShadow(vec3 P, int skip){
+  vec3 up = -sunInWater();
+  float sh = 0.0;
+  for (int i = 0; i < 12; i++){
+    if (i >= uKoiN) break;
+    if (i == skip) continue;
+    vec4 a = uKoiA[i]; vec4 b = uKoiB[i];
+    float hgt = a.y - P.y;
+    if (hgt < 0.012) continue;
+    vec2 q = P.xz + up.xz * (hgt / up.y) - a.xz;
+    float c = cos(a.w), s = sin(a.w);
+    vec2 l = vec2(c * q.x + s * q.y, -s * q.x + c * q.y);
+    float L = b.x;
+    float hl = 0.34 * L;
+    float px = clamp(l.x - 0.06 * L, -hl, hl);
+    float taper = mix(0.32, 1.0, smoothstep(-hl, hl * 0.3, px));
+    float d = length(vec2(l.x - 0.06 * L - px, l.y)) - 0.085 * L * taper;
+    float blur = 0.006 + hgt * 0.075;
+    sh = max(sh, (1.0 - smoothstep(-blur, blur, d)) * mix(0.82, 0.42, sat(hgt * 2.2)));
+  }
+  return sh;
+}
+// the dimples under the striders' feet bend the sunlight outwards like tiny diverging lenses: on the bottom each one
+// throws a dark round shadow, far bigger than the foot, ringed with the light it pushed aside; the body adds a faint
+// streak of shade between them
+float striderShade(vec3 P, vec3 Ls){
+  if (uStrN < 1) return 1.0;
+  float depth = max(-P.y, 0.0);
+  vec2 q = P.xz + Ls.xz * (depth / max(Ls.y, 0.25));        // where the sun ray to this point came through the surface
+  float m = 1.0, ring = 0.0;
+  for (int i = 0; i < 4; i++){
+    if (i >= uStrN) break;
+    vec4 s = uStrP[i];
+    vec2 dq = q - s.xy;
+    if (dot(dq, dq) > 0.0016 * s.w * s.w) continue;
+    float spread = 1.0 + depth * 6.0;
+    float c = cos(s.z), sn = sin(s.z);
+    vec2 lb = vec2(c * dq.x + sn * dq.y, -sn * dq.x + c * dq.y);
+    m *= 1.0 - 0.45 / spread * (1.0 - smoothstep(0.55, 1.0, length(lb / vec2(0.0068 * s.w + 0.002 * depth, 0.0015 * s.w + 0.002 * depth))));
+    for (int k = 0; k < 3; k++){
+      vec4 tt = uStrT[i * 3 + k];
+      float R = (k == 0 ? 0.0012 : 0.0024) * s.w * spread;
+      float d0 = length(q - tt.xy) / R, d1 = length(q - tt.zw) / R;
+      m *= (1.0 - 0.86 * (1.0 - smoothstep(0.62, 1.0, d0))) * (1.0 - 0.86 * (1.0 - smoothstep(0.62, 1.0, d1)));
+      float rw = k == 0 ? 0.55 : 1.0;
+      ring += rw * (exp(-pow((d0 - 1.1) / 0.17, 2.0)) + exp(-pow((d1 - 1.1) / 0.17, 2.0)));
+    }
+  }
+  return m * (1.0 + 1.1 * ring);
+}
+vec3 underLight(vec3 P, vec3 N, float ao, int skip, out vec3 sunPart){
+  float depth = max(-P.y, 0.0);
+  vec3 Ld = sunInWater();
+  vec3 Ls = -Ld;
+  float fl = floorAt(P.xz);
+  float t = max((fl - P.y) / Ld.y, 0.0);
+  vec2 cuv = domUV(P.xz + Ld.xz * t);
+  float cs = texture(uCaustic, cuv).r;
+  float cb = textureLod(uCaustic, cuv, 4.0).r;
+  float focus = sat(depth / max(-fl, 0.05));
+  float caus = mix(cb, cs, focus * focus);
+  vec3 Td = exp(-(uSigA + 0.45 * uSigS) * depth / max(-Ld.y, 0.25));
+  float sh = koiShadow(P, skip);
+  sunPart = uSunCol * 0.97 * Td * caus * (1.0 - sh) * striderShade(P, Ls);
+  float padOcc = textureLod(uPadMask, domUV(P.xz + Ls.xz * (depth / max(Ls.y, 0.3))), 3.5).r;
+  vec3 sky = mix(uSkyHor, uSkyTop, 0.6) * exp(-(uSigA + uSigS) * depth * 1.1) * (1.0 - 0.4 * padOcc);
+  return sunPart * max(dot(N, Ls), 0.0) + sky * (0.5 + 0.5 * N.y) * ao;
+}
+vec3 viewThroughWater(vec3 col, vec3 P){
+  float depth = max(-P.y, 0.0);
+  vec3 dv = normalize(P - uCamPos);
+  float sinW = length(dv.xz) / IOR;
+  float Lv = depth / sqrt(1.0 - sinW * sinW);
+  vec3 Tv = exp(-(uSigA + uSigS) * Lv);
+  return col * Tv + uScat * (1.0 - Tv);
+}
+`;
+
+
+const GL_SHADOW = /* glsl */`
+uniform sampler2DShadow uShadowMap; uniform mat4 uShadowMat; uniform float uShadowOn; uniform float uShadowTexel;
+float sunShadow(vec3 P, vec3 N){
+  if (uShadowOn < 0.5) return 1.0;
+  vec4 sc = uShadowMat * vec4(P + N * 0.015 + uSunDir * 0.01, 1.0);
+  vec3 c = sc.xyz / sc.w;
+  if (c.x < 0.001 || c.x > 0.999 || c.y < 0.001 || c.y > 0.999 || c.z > 1.0) return 1.0;
+  float s = 0.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) s += texture(uShadowMap, vec3(c.xy + vec2(float(i), float(j)) * uShadowTexel * 1.25, c.z - 0.0008));
+  return s / 9.0;
+}
+float sunShadow1(vec3 P){
+  if (uShadowOn < 0.5) return 1.0;
+  vec4 sc = uShadowMat * vec4(P + uSunDir * 0.01, 1.0);
+  vec3 c = sc.xyz / sc.w;
+  if (c.x < 0.001 || c.x > 0.999 || c.y < 0.001 || c.y > 0.999 || c.z > 1.0) return 1.0;
+  return texture(uShadowMap, vec3(c.xy, c.z - 0.0008));
+}
+`;
+const GL_LAND = /* glsl */`
+${GL_SHADOW}
+#ifndef HAS_FLOORTEX
+uniform sampler2D uFloorTex;
+#endif
+uniform vec4 uRock[96];
+uniform int uRockN;
+// contact occlusion from rim stones (sun shadows come from the shadow map)
+float rockShade(vec3 P, out float ao){
+  ao = 1.0;
+  vec2 uv = domUV(P.xz);
+  float nearLantern = step(length(P.xz - uRock[uRockN - 1].xy), 0.6);
+  if (nearLantern < 0.5) {
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+    if (abs(texture(uFloorTex, uv).g) > 0.7) return 1.0;
+  }
+  for (int i = 0; i < 96; i++){
+    if (i >= uRockN) break;
+    vec4 r = uRock[i];
+    float d = length(P.xz - r.xy);
+    if (d > r.z * 1.6) continue;
+    float above = sat((r.w + 0.04 - P.y) * 8.0);
+    ao *= 1.0 - 0.5 * (1.0 - smoothstep(r.z * 0.75, r.z * 1.5, d)) * above;
+  }
+  return 1.0;
+}
+vec3 shadeLand(vec3 P, vec3 N, vec3 alb, float rough, float ao, float vis, float spec){
+  vis *= sunShadow(P, N);
+  vec3 V = normalize(cameraPosition - P);
+  float ndl = max(dot(N, uSunDir), 0.0);
+  vec3 skyAmb = mix(uSkyHor * 0.9, uSkyTop, 0.5 + 0.5 * N.y) * 0.6;
+  vec3 bounce = vec3(0.06, 0.08, 0.03) * sat(-N.y + 0.3);
+  vec3 H = normalize(uSunDir + V);
+  float sp = ggx(max(dot(N, H), 0.0), rough) * spec / (4.0 * max(dot(N, V), 0.15));
+  vec3 col = alb * (uSunCol * ndl * vis + (skyAmb + bounce * uSunCol.g) * ao) + uSunCol * sp * ndl * vis;
+  return fogLand(col, P);
+}
+`;
+
+const FS_VS = /* glsl */`varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+
+// ================================================================= render targets & passes
+function makeRT(w, h, o = {}) {
+  return new THREE.WebGLRenderTarget(w, h, Object.assign({ type: THREE.HalfFloatType, format: THREE.RGBAFormat, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false, stencilBuffer: false, generateMipmaps: false, wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping }, o));
+}
+const fsScene = new THREE.Scene();
+const fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const fsQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
+fsQuad.frustumCulled = false; fsScene.add(fsQuad);
+function runPass(mat, target, clear = false) {
+  fsQuad.material = mat; renderer.setRenderTarget(target);
+  if (clear) renderer.clear(true, false, false);
+  renderer.render(fsScene, fsCam);
+}
+function fsMat(fragmentShader, uniforms = {}, extra = {}) {
+  return new THREE.ShaderMaterial(Object.assign({ vertexShader: FS_VS, fragmentShader, uniforms, depthTest: false, depthWrite: false }, extra));
+}
+
+// ---------------------------------------------------------------- wave simulation
+const [SW, SH] = Q.sim;
+let simA = makeRT(SW, SH), simB = makeRT(SW, SH);
+const simMat = fsMat(/* glsl */`
+uniform sampler2D uState; uniform vec2 uTexel; uniform sampler2D uFloorTex; uniform sampler2D uPadMask;
+varying vec2 vUv;
+void main(){
+  vec4 info = texture(uState, vUv);
+  float avg = 0.25 * (texture(uState, vUv - vec2(uTexel.x, 0.0)).r + texture(uState, vUv + vec2(uTexel.x, 0.0)).r
+                    + texture(uState, vUv - vec2(0.0, uTexel.y)).r + texture(uState, vUv + vec2(0.0, uTexel.y)).r);
+  info.g += (avg - info.r) * 2.0;
+  info.g *= 0.9935;
+  info.g *= 1.0 - 0.045 * texture(uPadMask, vUv).r;
+  info.r += info.g;
+  info.r *= 0.9992;
+  float m = 1.0 - smoothstep(-0.035, 0.0, texture(uFloorTex, vUv).g);
+  gl_FragColor = vec4(info.rg * m, 0.0, 1.0);
+}`, { uState: { value: null }, uTexel: { value: new THREE.Vector2(1 / SW, 1 / SH) }, uFloorTex: G.uFloorTex, uPadMask: G.uPadMask });
+const dropMat = fsMat(/* glsl */`
+uniform sampler2D uState; uniform vec4 uDrops[16]; uniform int uDropN; uniform vec4 uDomain;
+varying vec2 vUv;
+void main(){
+  vec4 info = texture(uState, vUv);
+  vec2 p = uDomain.xy + vUv * uDomain.zw;
+  for (int i = 0; i < 16; i++){
+    if (i >= uDropN) break;
+    vec4 d = uDrops[i];
+    float r = length(p - d.xy) / d.z;
+    if (r < 1.0) info.r += (0.5 + 0.5 * cos(r * 3.14159265)) * d.w;
+  }
+  gl_FragColor = info;
+}`, { uState: { value: null }, uDrops: { value: Array.from({ length: 16 }, () => new THREE.Vector4()) }, uDropN: { value: 0 }, uDomain: G.uDomain });
+const dropQueue = [];
+let dropCount = 0;
+const MIN_DROP_R = 2.7 * DOMAIN.w / SW;   // a ring thinner than ~3 sim cells simply vanishes in the wave grid
+function addDrop(x, z, r, s) {
+  dropCount++;
+  const r0 = r * 1.15, rn = Math.max(r0, MIN_DROP_R);
+  if (dropQueue.length < 96) dropQueue.push([x, z, rn, s * 1.3 * (rn / r0)]);
+}
+function simSwap() { const t = simA; simA = simB; simB = t; }
+function applyDrops() {
+  if (!dropQueue.length) return;
+  const n = Math.min(16, dropQueue.length);
+  for (let i = 0; i < n; i++) { const d = dropQueue.shift(); dropMat.uniforms.uDrops.value[i].set(d[0], d[1], d[2], d[3]); }
+  dropMat.uniforms.uDropN.value = n; dropMat.uniforms.uState.value = simA.texture;
+  runPass(dropMat, simB); simSwap();
+}
+function simStep() { simMat.uniforms.uState.value = simA.texture; runPass(simMat, simB); simSwap(); }
+
+// ---------------------------------------------------------------- surface (height + gradient)
+const surfRT = makeRT(Q.surf[0], Q.surf[1]);
+G.uSurf.value = surfRT.texture;
+const padMaskRT = makeRT(Q.surf[0], Q.surf[1], { type: THREE.UnsignedByteType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
+G.uPadMask.value = padMaskRT.texture;
+const surfMat = fsMat(/* glsl */`
+${GL_COMMON}
+uniform sampler2D uSim; uniform vec2 uSimTexel; uniform sampler2D uPadMask; uniform sampler2D uFloorTex;
+uniform vec4 uGw[4]; uniform vec2 uWind; uniform float uRipAmp; uniform float uGust; uniform int uRipOct; uniform float uRipA[5];
+varying vec2 vUv;
+vec3 gerstnerHG(vec2 p, float t){
+  vec3 r = vec3(0.0);
+  for (int i = 0; i < 4; i++){
+    vec4 g = uGw[i];
+    float k = 2.0 * PI / g.z; float w = sqrt(9.81 * k);
+    float ph = k * dot(g.xy, p) - w * t + float(i) * 1.7;
+    r.x += g.w * sin(ph);
+    r.yz += g.w * k * g.xy * cos(ph);
+  }
+  return r;
+}
+vec3 ripplesHG(vec2 p, float t, int oct){
+  vec3 sum = vec3(0.0);
+  float lam = 0.30;
+  mat2 M = mat2(1.0, 0.0, 0.0, 1.0);
+  vec2 perp = vec2(-uWind.y, uWind.x);
+  for (int i = 0; i < 5; i++){
+    if (i >= oct) break;
+    float amp = uRipA[i] * uRipAmp;
+    float kk = 2.0 * PI / lam;
+    float c = sqrt(9.81 / kk + 0.0728 * kk / 1000.0);
+    float f = 1.5 / lam;
+    vec2 off = vec2(float(i) * 7.31, float(i) * 3.17);
+    vec3 n1 = noised(M * p * f - (M * uWind) * (c * t * f) + off);
+    vec3 n2 = noised(M * p * f * 1.13 - (M * normalize(uWind + 0.9 * perp)) * (0.8 * c * t * f) - off.yx);
+    vec3 nn = (n1 + 0.75 * n2) * 0.62;
+    sum.x += amp * nn.x;
+    sum.yz += amp * f * (transpose(M) * nn.yz);
+    lam *= 0.55;
+    M = mat2(0.8, -0.6, 0.6, 0.8) * M;
+  }
+  return sum;
+}
+void main(){
+  vec2 p = uDomain.xy + vUv * uDomain.zw;
+  float hC = texture(uSim, vUv).r;
+  float hL = texture(uSim, vUv - vec2(uSimTexel.x, 0.0)).r, hR = texture(uSim, vUv + vec2(uSimTexel.x, 0.0)).r;
+  float hD = texture(uSim, vUv - vec2(0.0, uSimTexel.y)).r, hU = texture(uSim, vUv + vec2(0.0, uSimTexel.y)).r;
+  vec2 cell = uSimTexel * uDomain.zw;
+  vec3 sim = vec3(hC, (hR - hL) / (2.0 * cell.x), (hU - hD) / (2.0 * cell.y));
+  float sdf = texture(uFloorTex, vUv).g;
+  float shore = mix(0.3, 1.0, smoothstep(0.0, -0.5, sdf));
+  float pad = textureLod(uPadMask, vUv, 2.5).r;
+  float gst = mix(0.45, 1.15, smoothstep(0.32, 0.72, fbm(p * 0.5 - uWind * uTime * 0.16))) * uGust;
+  vec3 rip = ripplesHG(p, uTime, uRipOct) * gst * shore * (1.0 - 0.72 * pad);
+  vec3 gw = gerstnerHG(p, uTime) * shore;
+  float water = 1.0 - smoothstep(-0.01, 0.03, sdf);
+  gl_FragColor = vec4((sim * 2.1 + rip + gw) * water, length(sim.yz) * 2.1 * water);
+}`, Object.assign({}, G, { uSim: { value: null }, uSimTexel: { value: new THREE.Vector2(1 / SW, 1 / SH) }, uRipOct: { value: Q.rip } }));
+
+// ---------------------------------------------------------------- caustics
+const causRaw = makeRT(Q.caus[0], Q.caus[1]);
+const causRT = makeRT(Q.caus[0], Q.caus[1], { generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
+G.uCaustic.value = causRT.texture;
+function gridGeometry(nx, ny) {
+  const pos = new Float32Array((nx + 1) * (ny + 1) * 3), uv = new Float32Array((nx + 1) * (ny + 1) * 2);
+  let k = 0;
+  for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) { uv[k * 2] = i / nx; uv[k * 2 + 1] = j / ny; k++; }
+  const idx = new Uint32Array(nx * ny * 6); let m = 0;
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const a = j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
+    idx[m++] = a; idx[m++] = c; idx[m++] = b; idx[m++] = b; idx[m++] = c; idx[m++] = d;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  return g;
+}
+const causScene = new THREE.Scene();
+const causMat = new THREE.ShaderMaterial({
+  uniforms: Object.assign({}, G),
+  vertexShader: /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+uniform sampler2D uSurf; uniform sampler2D uFloorTex; uniform sampler2D uPadMask;
+varying vec2 vOld; varying vec2 vNew; varying float vT;
+vec3 floorHit(vec3 S, vec3 R){
+  float y = textureLod(uFloorTex, domUV(S.xz), 0.0).r;
+  vec3 P = S + R * ((y - S.y) / R.y);
+  y = textureLod(uFloorTex, domUV(P.xz), 0.0).r; P = S + R * ((y - S.y) / R.y);
+  y = textureLod(uFloorTex, domUV(P.xz), 0.0).r; P = S + R * ((y - S.y) / R.y);
+  return P;
+}
+void main(){
+  vec2 p = uDomain.xy + uv * uDomain.zw;
+  vec4 s = textureLod(uSurf, uv, 0.0);
+  vec3 N = normalize(vec3(-s.y, 1.0, -s.z));
+  vec3 L = -uSunDir;
+  vec3 R = refract(L, N, 1.0 / IOR);
+  vec3 R0 = refract(L, vec3(0.0, 1.0, 0.0), 1.0 / IOR);
+  vec3 P = floorHit(vec3(p.x, s.x, p.y), R);
+  vec3 P0 = floorHit(vec3(p.x, 0.0, p.y), R0);
+  vOld = P0.xz; vNew = P.xz;
+  float pad = textureLod(uPadMask, uv, 0.0).r;
+  float sdf = textureLod(uFloorTex, uv, 0.0).g;
+  vT = (1.0 - pad) * (1.0 - schlick(max(dot(N, uSunDir), 0.0))) / (1.0 - schlick(max(uSunDir.y, 0.0))) * (1.0 - smoothstep(-0.02, 0.02, sdf));
+  vT *= sunShadow1(vec3(p.x, s.x, p.y));
+  gl_Position = vec4(domUV(P.xz) * 2.0 - 1.0, 0.0, 1.0);
+}`,
+  fragmentShader: /* glsl */`
+varying vec2 vOld; varying vec2 vNew; varying float vT;
+void main(){
+  float oldA = abs(dFdx(vOld.x) * dFdy(vOld.y) - dFdx(vOld.y) * dFdy(vOld.x));
+  float newA = abs(dFdx(vNew.x) * dFdy(vNew.y) - dFdx(vNew.y) * dFdy(vNew.x));
+  float I = min(oldA / max(newA, 1e-14), 36.0) * vT;
+  gl_FragColor = vec4(I, I, I, 1.0);
+}`,
+  blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+  depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+});
+const causMesh = new THREE.Mesh(gridGeometry(Q.surf[0], Q.surf[1]), causMat);
+causMesh.frustumCulled = false; causScene.add(causMesh);
+const causBlurMat = fsMat(/* glsl */`
+uniform sampler2D uTex; uniform vec2 uTexel; varying vec2 vUv;
+void main(){
+  vec3 c = texture(uTex, vUv).rgb * 4.0;
+  c += (texture(uTex, vUv + vec2(uTexel.x, 0.0)).rgb + texture(uTex, vUv - vec2(uTexel.x, 0.0)).rgb
+      + texture(uTex, vUv + vec2(0.0, uTexel.y)).rgb + texture(uTex, vUv - vec2(0.0, uTexel.y)).rgb) * 2.0;
+  c += texture(uTex, vUv + uTexel).rgb + texture(uTex, vUv - uTexel).rgb
+     + texture(uTex, vUv + vec2(uTexel.x, -uTexel.y)).rgb + texture(uTex, vUv + vec2(-uTexel.x, uTexel.y)).rgb;
+  gl_FragColor = vec4(c / 16.0, 1.0);
+}`, { uTex: { value: causRaw.texture }, uTexel: { value: new THREE.Vector2(1 / Q.caus[0], 1 / Q.caus[1]) } });
+
+// ================================================================= scene
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.05, 150);
+const reflCam = new THREE.PerspectiveCamera();
+const reflMatrix = new THREE.Matrix4();
+function onLayers(obj, ...layers) { obj.layers.disableAll(); for (const l of layers) obj.layers.enable(l); return obj; }
+function smat(vs, fs, uniforms = {}, extra = {}) {
+  return new THREE.ShaderMaterial(Object.assign({ vertexShader: vs, fragmentShader: fs, uniforms: Object.assign({}, G, uniforms) }, extra));
+}
+
+// ---------------------------------------------------------------- sky
+const sky = new THREE.Mesh(new THREE.SphereGeometry(90, 48, 24), smat(/* glsl */`
+varying vec3 vW;
+void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`, /* glsl */`
+${GL_COMMON}
+varying vec3 vW;
+void main(){ vec3 d = normalize(vW - cameraPosition); gl_FragColor = vec4(skyColor(d, uPass < 0.5 ? 1.0 : 0.0), 1.0); }`,
+{}, { side: THREE.BackSide, depthWrite: false }));
+sky.renderOrder = -10; sky.frustumCulled = false;
+onLayers(sky, LAYER.MAIN, LAYER.REFL); scene.add(sky);
+
+// distant woodland: foliage walls sculpted from noise + clipped shrubs
+const BG_FS = /* glsl */`
+${GL_COMMON}
+uniform float uR; uniform float uLayer;
+varying vec3 vW;
+float fbmL(vec2 p){ float s = 0.0, a = 0.5; for (int i = 0; i < 3; i++){ s += a * vnoise(p); p = mat2(1.6, 1.2, -1.2, 1.6) * p; a *= 0.5; } return s * 1.15; }
+float foliageH(vec2 p){ return fbmL(p * 0.9) + 0.5 * fbmL(p * 2.3 + 7.0); }
+void main(){
+  float a = atan(vW.z, vW.x);
+  float x = a * uR;
+  float y = vW.y;
+  float top = (uLayer > 0.5 ? 4.4 : 3.2) + 2.6 * fbm(vec2(x * 0.11, uLayer * 3.0)) + 1.0 * fbm(vec2(x * 0.45, 1.0 + uLayer)) + 0.35 * fbm(vec2(x * 1.8, 2.0));
+  if (y > top) discard;
+  vec2 fp = vec2(x, y) * (uLayer > 0.5 ? 1.2 : 1.6);
+  float e = 0.06;
+  float f0 = foliageH(fp);
+  vec2 g = vec2(foliageH(fp + vec2(e, 0.0)) - f0, foliageH(fp + vec2(0.0, e)) - f0) / e;
+  vec3 dir = normalize(vec3(vW.x, 0.0, vW.z));
+  vec3 tang = normalize(vec3(-dir.z, 0.0, dir.x));
+  vec3 n = normalize(-dir * 1.0 - tang * g.x * 0.5 + vec3(0.0, 1.0, 0.0) * (0.35 - g.y * 0.5));
+  float lit = sat(dot(n, uSunDir)) * 0.85 + 0.15;
+  float cav = smoothstep(0.25, 0.75, f0);
+  float hue = fbmL(vec2(x * 0.08, 3.0 + uLayer));
+  vec3 base = mix(vec3(0.035, 0.07, 0.022), vec3(0.075, 0.11, 0.032), hue);
+  base = mix(base, vec3(0.30, 0.09, 0.03), smoothstep(0.68, 0.76, fbmL(vec2(x * 0.25, y * 0.35) + 9.0 + uLayer)) * 0.8);
+  base = mix(base, vec3(0.30, 0.22, 0.05), smoothstep(0.68, 0.76, fbmL(vec2(x * 0.22, y * 0.3) + 19.0 + uLayer)) * 0.7);
+  vec3 c = base * (uSunCol * lit * 0.55 + mix(uSkyHor, uSkyTop, 0.5) * 0.45) * (0.35 + 0.65 * cav);
+  float trunk = smoothstep(0.08, 0.0, abs(fract(x / 0.9 + hash11(floor(x / 0.9)) * 0.4) - 0.5) - 0.45) * smoothstep(1.5, 0.4, y) * step(0.4, hash11(floor(x / 0.9) * 3.3));
+  c = mix(c, vec3(0.02, 0.018, 0.016), trunk * 0.8);
+  float dist = length(vW - cameraPosition);
+  c = mix(c, fogCol() * 0.92, 1.0 - exp(-dist * (uLayer > 0.5 ? 0.028 : 0.014)));
+  gl_FragColor = vec4(c, 1.0);
+}`;
+const BG_VS = /* glsl */`varying vec3 vW; void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`;
+for (const [R, layer] of [[17, 0], [27, 1]]) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(R, R, 12, 220, 1, true), smat(BG_VS, BG_FS, { uR: { value: R }, uLayer: { value: layer } }, { side: THREE.DoubleSide }));
+  m.position.y = 5.8; m.frustumCulled = false; m.renderOrder = -5 + layer;
+  onLayers(m, LAYER.MAIN, LAYER.REFL); scene.add(m);
+}
+// clipped shrubs (karikomi)
+{
+  const base = toIndexed(new THREE.IcosahedronGeometry(1, 3));
+  const bp = base.attributes.position; const bi = base.index.array;
+  const pos = [], seeds = [], idx = [];
+  const spots = [];
+  for (let i = 0; i < 64; i++) {
+    const a = rr(0, TAU); const r = pondR(a) + rr(1.6, 4.8);
+    const x = Math.cos(a) * r * 1.05, z = Math.sin(a) * r;
+    if (Math.hypot(x - LANT.x, z - LANT.z) < 0.9) continue;
+    spots.push([x, z, rr(0.35, 0.85), rnd()]);
+  }
+  for (const [x, z, sz, sd] of spots) {
+    const o = pos.length / 3; const y0 = terrainH(x, z);
+    const sy = sz * rr(0.55, 0.8), sx = sz * rr(0.9, 1.3), szz = sz * rr(0.9, 1.3);
+    for (let i = 0; i < bp.count; i++) {
+      let dx = bp.getX(i), dy = bp.getY(i), dz = bp.getZ(i);
+      const n = 1 + 0.12 * fbm(dx * 1.6 + sd * 30, dz * 1.6 + dy * 1.3, 3);
+      dx *= n; dy *= n; dz *= n; if (dy < -0.3) dy = -0.3;
+      pos.push(x + dx * sx, y0 + (dy + 0.3) * sy, z + dz * szz); seeds.push(sd);
+    }
+    for (let i = 0; i < bi.length; i++) idx.push(bi[i] + o);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1));
+  g.setIndex(idx); g.computeVertexNormals();
+  const shrubs = new THREE.Mesh(g, smat(/* glsl */`
+${GL_COMMON}
+attribute float aSeed; varying vec3 vW; varying vec3 vN; varying float vSeed;
+void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; vN = normalize(mat3(modelMatrix) * normal); vSeed = aSeed; gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN; varying float vSeed;
+void main(){
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  vec3 q = vW * 26.0 + vSeed * 10.0;
+  float f = vnoise3(q) * 0.6 + vnoise3(q * 2.3) * 0.4;
+  float e = 0.05;
+  vec3 g = vec3(vnoise3(q + vec3(e, 0.0, 0.0)), vnoise3(q + vec3(0.0, e, 0.0)), vnoise3(q + vec3(0.0, 0.0, e))) - vnoise3(q);
+  vec3 N = normalize(normalize(vN) + g / e * 0.18);
+  vec3 base = vSeed < 0.22 ? vec3(0.26, 0.05, 0.025) : vSeed < 0.32 ? vec3(0.22, 0.17, 0.04) : mix(vec3(0.035, 0.08, 0.02), vec3(0.08, 0.14, 0.035), vSeed);
+  base *= 0.55 + 0.6 * f;
+  float ao = mix(0.35, 1.0, smoothstep(-0.2, 0.7, normalize(vN).y * 0.5 + 0.5)) * (0.6 + 0.4 * f);
+  gl_FragColor = vec4(shadeLand(vW, N, base, 0.7, ao, 1.0, 0.05), 1.0);
+}`));
+  shrubs.frustumCulled = false;
+  onLayers(shrubs, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(shrubs);
+}
+const farGround = new THREE.Mesh(new THREE.RingGeometry(7.0, 34, 96, 1).rotateX(-Math.PI / 2), smat(BG_VS, /* glsl */`
+${GL_COMMON}
+varying vec3 vW;
+void main(){
+  vec2 xz = vW.xz;
+  vec3 c = mix(vec3(0.05, 0.09, 0.025), vec3(0.11, 0.15, 0.04), fbm(xz * 0.8)) * (0.8 + 0.3 * vnoise(xz * 6.0));
+  c = mix(c, vec3(0.10, 0.08, 0.05), smoothstep(0.55, 0.75, fbm(xz * 0.5 + 3.0)) * 0.6);
+  vec3 col = c * (uSunCol * max(uSunDir.y, 0.0) * 0.7 + mix(uSkyHor, uSkyTop, 0.7) * 0.5);
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`));
+farGround.position.y = 0.16; farGround.frustumCulled = false;
+onLayers(farGround, LAYER.MAIN, LAYER.REFL); scene.add(farGround);
+
+// ---------------------------------------------------------------- terrain (land + pond floor)
+const terrainGeo = (() => {
+  const W = 19.2, H = 14.8, nx = TIER === 'low' ? 400 : 520, ny = TIER === 'low' ? 310 : 400;
+  const g = new THREE.PlaneGeometry(W, H, nx, ny); g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i); p.setY(i, terrainH(x, z)); }
+  g.computeVertexNormals();
+  return g;
+})();
+const TERRAIN_VS = /* glsl */`
+${GL_COMMON}
+varying vec3 vW; varying vec3 vN;
+void main(){
+  vec3 w = (modelMatrix * vec4(position, 1.0)).xyz;
+  vW = w; vN = normalize(mat3(modelMatrix) * normal);
+  vec3 r = IS_REFR ? apparentPos(w) : w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(r, 1.0);
+}`;
+const terrain = new THREE.Mesh(terrainGeo, smat(TERRAIN_VS, /* glsl */`
+${GL_COMMON}
+${GL_BUMP}
+${GL_UNDER}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN;
+vec3 floorAlbedo(vec2 xz, inout vec3 N, out float ao){
+  float steep = smoothstep(0.82, 0.62, N.y);
+  float s1 = fbm(xz * 2.6 + 5.0);
+  vec3 col = mix(vec3(0.075, 0.07, 0.05), vec3(0.15, 0.135, 0.10), s1) * (0.85 + 0.3 * vnoise(xz * 90.0));
+  ao = 0.82;
+  vec3 nAdd = vec3(0.0);
+  bool hitBig = false;
+  for (int L = 0; L < 2; L++){
+    float sc = L == 0 ? 17.0 : 31.0;
+    vec4 v = voronoiV(xz * sc + float(L) * 17.0);
+    float id = v.w;
+    if (hash11(id * 13.1) < (L == 0 ? 0.18 : 0.30) || steep > 0.5) continue;
+    if (L == 1 && hitBig) break;
+    float R = mix(0.34, 0.50, hash11(id * 47.0));
+    float ang = id * 31.0;
+    mat2 rot = mat2(cos(ang), -sin(ang), sin(ang), cos(ang));
+    vec2 o = rot * (-v.xy);
+    vec2 oe = o * vec2(1.0, 1.4);
+    float d = length(oe) / R;
+    if (d < 1.0) {
+      if (L == 0) hitBig = true;
+      float dome = sqrt(max(1.0 - d * d, 0.0));
+      float k = hash11(id * 7.7);
+      vec3 pc = k < 0.30 ? vec3(0.27, 0.26, 0.24) : k < 0.50 ? vec3(0.30, 0.24, 0.17) : k < 0.66 ? vec3(0.09, 0.09, 0.09)
+              : k < 0.80 ? vec3(0.36, 0.32, 0.26) : k < 0.92 ? vec3(0.20, 0.23, 0.26) : vec3(0.48, 0.46, 0.42);
+      pc *= (0.8 + 0.4 * vnoise(xz * 260.0 + id * 50.0)) * 0.78;
+      pc = mix(pc, vec3(0.09, 0.11, 0.045), smoothstep(0.35, 0.75, fbm(xz * 5.0 - 3.0)) * 0.7);
+      float edge = smoothstep(1.0, 0.82, d);
+      col = mix(col, pc, edge);
+      vec2 g = (transpose(rot) * (oe * vec2(1.0, 1.4))) / R;
+      nAdd = mix(nAdd, vec3(g.x, 0.0, g.y) * 0.9 / max(dome, 0.25), edge);
+      ao = mix(ao, mix(0.7, 1.0, dome), edge);
+    } else {
+      ao *= mix(0.75, 1.0, smoothstep(1.0, 1.4, d));
+    }
+  }
+  // sunken leaves
+  vec4 lv = voronoiV(xz * 3.2 + 7.7);
+  if (lv.w > 0.86) {
+    float ang = atan(lv.y, lv.x) + lv.w * 40.0; float r = length(lv.xy);
+    float Rl = 0.26 * (0.55 + 0.45 * pow(abs(cos(ang * 2.5)), 0.7));
+    float leaf = 1.0 - smoothstep(Rl - 0.03, Rl, r);
+    col = mix(col, vec3(0.10, 0.06, 0.03) * (0.8 + 0.4 * vnoise(xz * 120.0)), leaf * 0.8);
+    nAdd *= 1.0 - leaf;
+  }
+  col = mix(col, vec3(0.07, 0.075, 0.04) * (0.75 + 0.5 * fbm(xz * 9.0)), steep);
+  N = normalize(N + nAdd * (1.0 - steep));
+  return col;
+}
+vec3 bankFilm(vec3 col, vec3 P){
+  float shallow = smoothstep(-0.26, -0.10, P.y);
+  float film = smoothstep(0.35, 0.65, fbm(P.xz * 3.5 + 2.0)) * 0.6 + 0.4;
+  return mix(col, vec3(0.07, 0.085, 0.035) * (0.7 + 0.5 * vnoise(P.xz * 60.0)), shallow * film * 0.85);
+}
+uniform vec2 uTrees[9];
+vec3 landAlbedo(vec3 P, vec3 N, out float hgt, out float rough, float rao){
+  vec2 xz = P.xz;
+  float m = fbm(xz * 1.1 + 2.0);
+  vec4 cl = voronoiV(xz * 22.0);
+  float clump = sqrt(max(1.0 - cl.z * cl.z * 1.4, 0.0));
+  vec3 moss = mix(vec3(0.035, 0.075, 0.016), vec3(0.09, 0.15, 0.03), vnoise(xz * 5.0));
+  moss = mix(moss, vec3(0.13, 0.15, 0.04), smoothstep(0.6, 0.85, fbm(xz * 3.0 + 9.0)) * 0.6);
+  moss *= (0.7 + 0.45 * clump) * (0.85 + 0.3 * vnoise(xz * 140.0));
+  vec3 soil = vec3(0.12, 0.09, 0.06) * (0.75 + 0.5 * vnoise(xz * 34.0));
+  float mossy = smoothstep(0.30, 0.48, m);
+  vec3 c = mix(soil, moss, mossy);
+  hgt = clump * 0.004 * mossy + vnoise(xz * 90.0) * 0.002;
+  rough = 0.9;
+  // cushion moss where it stays damp and shaded: round the feet of the stones, the lantern and the maple trunks
+  float damp = smoothstep(0.97, 0.72, rao);
+  for (int i = 0; i < 9; i++) damp = max(damp, 1.0 - smoothstep(0.22, 0.85, length(xz - uTrees[i])));
+  damp = max(damp, 1.0 - smoothstep(0.3, 0.95, length(xz - uRock[uRockN - 1].xy)));
+  float cush = damp * smoothstep(0.36, 0.58, fbm(xz * 2.4 + 4.0) + 0.3 * damp);
+  if (cush > 0.001) {
+    vec4 cv = voronoiV(xz * 36.0 + 3.3);
+    float bump = sqrt(max(1.0 - cv.z * cv.z * 1.3, 0.0));
+    vec3 cm = mix(vec3(0.04, 0.10, 0.013), vec3(0.10, 0.21, 0.028), vnoise(xz * 8.0 + 2.0));
+    cm = mix(cm, vec3(0.15, 0.23, 0.045), smoothstep(0.65, 0.9, vnoise(xz * 23.0)) * 0.5);     // pale new growth
+    cm *= (0.7 + 0.42 * bump) * (0.85 + 0.3 * vnoise(xz * 330.0));
+    c = mix(c, cm, cush);
+    hgt = mix(hgt, bump * 0.007 + vnoise(xz * 300.0) * 0.0012, cush);
+    rough = mix(rough, 0.95, cush);
+  }
+  vec4 lv = voronoiV(xz * 7.0 + 1.3);
+  if (lv.w > 0.80) {
+    float ang = atan(lv.y, lv.x) + lv.w * 40.0;
+    float r = length(lv.xy);
+    float R = 0.20 * (0.40 + 0.60 * pow(abs(cos(ang * 3.5)), 2.0)) * (0.8 + 0.4 * hash11(lv.w * 13.0));
+    float leaf = 1.0 - smoothstep(R - 0.015, R, r);
+    float k = hash11(lv.w * 71.0);
+    vec3 lc = k < 0.4 ? vec3(0.40, 0.06, 0.03) : k < 0.7 ? vec3(0.52, 0.22, 0.04) : k < 0.85 ? vec3(0.50, 0.38, 0.08) : vec3(0.22, 0.12, 0.06);
+    c = mix(c, lc * (0.75 + 0.35 * vnoise(xz * 200.0)), leaf);
+    hgt += leaf * 0.0015;
+  }
+  float wet = 1.0 - smoothstep(0.0, 0.05, P.y);
+  c *= 1.0 - 0.4 * wet;
+  return c;
+}
+void main(){
+  vec3 P = vW;
+  vec3 Ng = normalize(vN);
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  if (IS_REFR) {
+    if (P.y > 0.03) discard;
+    float ao; vec3 N = Ng; vec3 alb = floorAlbedo(P.xz, N, ao);
+    alb = bankFilm(alb, P);
+    float rao; rockShade(P, rao); ao *= rao;
+    vec3 sunPart;
+    vec3 L = underLight(P, N, ao, -1, sunPart);
+    gl_FragColor = vec4(viewThroughWater(alb * L, P), 1.0);
+  } else {
+    if (P.y < -0.03) discard;
+    float ao; float vis = rockShade(P, ao);
+    float h, rough; vec3 alb = landAlbedo(P, Ng, h, rough, ao);
+    vec3 N = bumpN(Ng, P, h);
+    vec3 col = shadeLand(P, N, alb, rough, ao, vis, 0.02);
+    gl_FragColor = vec4(col, 1.0);
+  }
+}`));
+terrain.frustumCulled = false;
+onLayers(terrain, LAYER.MAIN, LAYER.REFL, LAYER.REFR); scene.add(terrain);
+
+// ---------------------------------------------------------------- rim rocks
+function toIndexed(geo) {
+  const pos = geo.attributes.position; const map = new Map(); const verts = []; const idx = [];
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const key = `${Math.round(x * 1e4)},${Math.round(y * 1e4)},${Math.round(z * 1e4)}`;
+    let k = map.get(key);
+    if (k === undefined) { k = verts.length / 3; map.set(key, k); verts.push(x, y, z); }
+    idx.push(k);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  g.setIndex(idx);
+  return g;
+}
+const ROCKS = [];
+const rockGeo = (() => {
+  const base = toIndexed(new THREE.IcosahedronGeometry(1, 4));
+  const bp = base.attributes.position; const bi = base.index.array;
+  const pos = [], seeds = [], types = [], aos = [], index = [];
+  const rocks = [];
+  let th = 0.1;
+  while (th < TAU + 0.02) {
+    const R = pondR(th);
+    const big = rnd() < 0.22;
+    const sx = big ? rr(0.26, 0.38) : rr(0.12, 0.23);
+    const out = rr(-0.02, 0.09) + sx * 0.22;
+    const [rx, rz] = snapToSdf(Math.cos(th) * (R + out), Math.sin(th) * (R + out), out);
+    rocks.push({ x: rx, z: rz, sx, sy: sx * rr(0.42, 0.75), sz: sx * rr(0.65, 1.0), rot: th + rr(-0.5, 0.5), seed: rr(0, 100), type: rnd() < 0.42 ? 1 : rnd() < 0.7 ? 2 : 0 });
+    th += (sx * 1.5 + (rnd() < 0.3 ? rr(0.15, 0.35) : rr(0.0, 0.1))) / Math.max(R, 1.8);
+  }
+  for (const r of rocks) {
+    const o = pos.length / 3;
+    const rg = mulberry32(Math.floor(r.seed * 1000));
+    const planes = [];
+    const np = 8 + Math.floor(rg() * 7);
+    for (let i = 0; i < np; i++) {
+      const a = rg() * TAU, b = Math.acos(rg() * 1.6 - 0.6);
+      planes.push([Math.sin(b) * Math.cos(a), Math.cos(b), Math.sin(b) * Math.sin(a), 0.74 + rg() * 0.26]);
+    }
+    planes.push([0, 1, 0, 0.5 + rg() * 0.3]);
+    const c = Math.cos(r.rot), s = Math.sin(r.rot);
+    const ground = terrainH(r.x, r.z);
+    const cy = Math.max(ground, -0.07) + r.sy * 0.2;
+    for (let i = 0; i < bp.count; i++) {
+      const dx = bp.getX(i), dy = bp.getY(i), dz = bp.getZ(i);
+      let acc = Math.exp(-1.25 / 0.05);
+      for (const pl of planes) { const cc = dx * pl[0] + dy * pl[1] + dz * pl[2]; if (cc > 0.02) acc += Math.exp(-(pl[3] / cc) / 0.05); }
+      let rad = -0.05 * Math.log(acc);
+      rad *= 1 + 0.045 * fbm(dx * 2.2 + r.seed, dz * 2.2 + dy * 1.7, 3) + 0.015 * fbm(dx * 9 + dy * 4, dz * 9 - r.seed, 2);
+      let x = dx * rad, y = dy * rad, z = dz * rad;
+      if (y < -0.25) y = -0.25 + (y + 0.25) * 0.3;
+      const px = x * r.sx, py = y * r.sy, pz = z * r.sz;
+      const wx = r.x + c * px - s * pz, wz = r.z + s * px + c * pz, wy = cy + py;
+      pos.push(wx, wy, wz);
+      seeds.push(r.seed); types.push(r.type);
+      aos.push(smooth(-0.02, 0.5 * r.sy, wy - terrainH(wx, wz)));
+    }
+    for (let i = 0; i < bi.length; i++) index.push(bi[i] + o);
+    if (ROCKS.length < 95) ROCKS.push([r.x, r.z, Math.max(r.sx, r.sz) * 0.95, cy + r.sy * 0.75]);
+  }
+  // stone lantern (kasuga-doro) on the far bank
+  const L = LANT;
+  const lg = terrainH(L.x, L.z);
+  const addPrism = (sides, r0, r1, y0, y1, type, rot = 0) => {
+    const g = new THREE.CylinderGeometry(r1, r0, y1 - y0, sides, 2, false, rot);
+    const gp = g.attributes.position; const o = pos.length / 3;
+    for (let i = 0; i < gp.count; i++) {
+      const wx = L.x + gp.getX(i), wy = lg + (y0 + y1) / 2 + gp.getY(i), wz = L.z + gp.getZ(i);
+      pos.push(wx, wy, wz); seeds.push(42.0); types.push(type); aos.push(smooth(0, 0.2, wy - lg));
+    }
+    const gi = g.index.array; for (let i = 0; i < gi.length; i++) index.push(gi[i] + o);
+  };
+  addPrism(6, 0.19, 0.17, -0.05, 0.07, 3);
+  addPrism(6, 0.13, 0.11, 0.07, 0.11, 3);
+  addPrism(16, 0.065, 0.055, 0.11, 0.56, 3);
+  addPrism(6, 0.13, 0.17, 0.56, 0.62, 3);
+  addPrism(6, 0.17, 0.15, 0.62, 0.65, 3);
+  for (let k = 0; k < 6; k++) { const a = k / 6 * TAU + Math.PI / 6; const g0 = { x: Math.cos(a) * 0.118, z: Math.sin(a) * 0.118 };
+    const gpost = new THREE.BoxGeometry(0.035, 0.17, 0.035); const gp = gpost.attributes.position; const o = pos.length / 3;
+    for (let i = 0; i < gp.count; i++) { const wx = L.x + g0.x + gp.getX(i), wy = lg + 0.735 + gp.getY(i), wz = L.z + g0.z + gp.getZ(i); pos.push(wx, wy, wz); seeds.push(42); types.push(3); aos.push(1); }
+    const gi = gpost.index.array; for (let i = 0; i < gi.length; i++) index.push(gi[i] + o); }
+  addPrism(6, 0.10, 0.10, 0.65, 0.82, 4);
+  addPrism(6, 0.16, 0.15, 0.82, 0.85, 3);
+  addPrism(6, 0.30, 0.05, 0.85, 1.00, 3);
+  addPrism(12, 0.05, 0.035, 1.00, 1.04, 3);
+  { const g = new THREE.SphereGeometry(0.048, 14, 10); const gp = g.attributes.position; const o = pos.length / 3;
+    for (let i = 0; i < gp.count; i++) { const yy = gp.getY(i); pos.push(L.x + gp.getX(i), lg + 1.075 + yy * (yy > 0 ? 1.25 : 0.9), L.z + gp.getZ(i)); seeds.push(42); types.push(3); aos.push(1); }
+    const gi = g.index.array; for (let i = 0; i < gi.length; i++) index.push(gi[i] + o); }
+  ROCKS.push([L.x, L.z, 0.2, lg + 0.9]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1));
+  g.setAttribute('aType', new THREE.Float32BufferAttribute(types, 1));
+  g.setAttribute('aAO', new THREE.Float32BufferAttribute(aos, 1));
+  g.setIndex(index); g.computeVertexNormals();
+  return g;
+})();
+ROCKS.forEach((r, i) => G.uRock.value[i].set(r[0], r[1], r[2], r[3]));
+G.uRockN.value = ROCKS.length;
+const rocks = new THREE.Mesh(rockGeo, smat(/* glsl */`
+${GL_COMMON}
+attribute float aSeed; attribute float aType; attribute float aAO;
+varying vec3 vW; varying vec3 vN; varying float vSeed; varying float vType; varying float vAO;
+void main(){
+  vec3 w = (modelMatrix * vec4(position, 1.0)).xyz;
+  vW = w; vN = normalize(mat3(modelMatrix) * normal); vSeed = aSeed; vType = aType; vAO = aAO;
+  vec3 r = IS_REFR ? apparentPos(w) : w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(r, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_BUMP}
+${GL_UNDER}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN; varying float vSeed; varying float vType; varying float vAO;
+void main(){
+  vec3 P = vW; vec3 Ng = normalize(vN);
+  if (IS_REFR) { if (P.y > 0.01) discard; } else { if (P.y < -0.01) discard; }
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  vec3 q = P + vSeed;
+  vec3 base; float h = 0.0;
+  if (vType < 0.5) {
+    base = mix(vec3(0.14, 0.135, 0.125), vec3(0.27, 0.26, 0.245), fbm3(q * 4.0));
+    float sp = vnoise3(q * 220.0);
+    base *= 0.82 + 0.3 * smoothstep(0.55, 0.75, sp);
+    base = mix(base, vec3(0.05), smoothstep(0.82, 0.9, vnoise3(q * 170.0 + 7.0)) * 0.7);
+    h = vnoise3(q * 120.0) * 0.0015 + fbm3(q * 10.0) * 0.006;
+  } else if (vType < 1.5) {
+    float band = sin(dot(q, normalize(vec3(0.25, 1.0, 0.15))) * 55.0 + fbm3(q * 5.0) * 5.0);
+    base = mix(vec3(0.09, 0.115, 0.095), vec3(0.20, 0.23, 0.19), band * 0.5 + 0.5);
+    base *= 0.85 + 0.3 * vnoise3(q * 60.0);
+    h = band * 0.0018 + fbm3(q * 8.0) * 0.008;
+  } else if (vType < 2.5) {
+    base = mix(vec3(0.065, 0.065, 0.065), vec3(0.15, 0.145, 0.14), fbm3(q * 5.0));
+    base *= 0.85 + 0.3 * vnoise3(q * 140.0);
+    h = fbm3(q * 12.0) * 0.007 + vnoise3(q * 160.0) * 0.001;
+  } else if (vType < 3.5) {
+    base = mix(vec3(0.20, 0.195, 0.18), vec3(0.33, 0.32, 0.30), fbm3(q * 6.0));
+    base *= 0.8 + 0.3 * vnoise3(q * 200.0);
+    base = mix(base, vec3(0.08, 0.075, 0.07), smoothstep(0.55, 0.8, fbm3(q * 3.0 + 5.0)) * 0.6);
+    h = fbm3(q * 14.0) * 0.004;
+  } else {
+    base = vec3(0.02, 0.018, 0.015);
+  }
+  // lichen
+  float li = smoothstep(0.62, 0.72, fbm3(q * 9.0 + 4.0));
+  base = mix(base, mix(vec3(0.46, 0.48, 0.40), vec3(0.55, 0.40, 0.16), step(0.8, hash13(floor(q * 9.0)))), li * 0.45 * step(vType, 3.5));
+  vec3 N = bumpN(Ng, P, h);
+  // moss on top & in crevices
+  float moss = smoothstep(0.5, 0.9, N.y) * smoothstep(0.42, 0.62, fbm3(q * 3.2 - 2.0)) * smoothstep(0.04, 0.10, P.y);
+  moss = max(moss, smoothstep(0.85, 0.35, vAO) * 0.6 * smoothstep(0.0, 0.06, P.y));
+  vec3 mossC = mix(vec3(0.05, 0.11, 0.02), vec3(0.13, 0.20, 0.04), vnoise3(q * 40.0)) * (0.75 + 0.5 * vnoise3(q * 160.0));
+  base = mix(base, mossC, moss * step(vType, 3.5));
+  float wet = 1.0 - smoothstep(0.0, 0.05, P.y);
+  base *= 1.0 - 0.45 * wet;
+  float ao = mix(0.35, 1.0, vAO) * (0.75 + 0.25 * smoothstep(0.3, 0.6, fbm3(q * 7.0)));
+  if (IS_REFR) {
+    base = mix(base, vec3(0.08, 0.10, 0.04), 0.55 * smoothstep(0.0, -0.06, P.y));
+    vec3 sp; vec3 L = underLight(P, N, ao, -1, sp);
+    gl_FragColor = vec4(viewThroughWater(base * L, P), 1.0);
+  } else {
+    float gao; float vis = 1.0;
+    gl_FragColor = vec4(shadeLand(P, N, base, mix(0.6, 0.25, wet), ao, vis, mix(0.06, 0.4, wet)), 1.0);
+  }
+}`));
+rocks.frustumCulled = false;
+onLayers(rocks, LAYER.MAIN, LAYER.REFL, LAYER.REFR, LAYER.SHADOW); scene.add(rocks);
+
+
+// ---------------------------------------------------------------- grass, iris & susuki leaves (instanced blades)
+// susuki (Japanese silver grass) clumps along the far bank, where the evening sun comes from behind them
+const SUSUKI = [[-0.22, 0.42], [-0.78, 0.50], [-1.76, 0.45], [-2.33, 0.50], [2.72, 0.45]].map(([th, off]) => polarAt(th, off));
+// cattail (ガマ) stands growing in the shallows at the two ends of the pond
+const TYPHA = [2.86, 0.07].map((th) => { const p = polarAt(th, -0.17); const [x, z] = snapToSdf(p.x, p.z, -0.17); return { x, z, th }; });
+const blades = [];
+function addClump(x, z, n, hMin, hMax, w, kind, spread) {
+  const y = terrainH(x, z);
+  for (let i = 0; i < n; i++) {
+    const a = rr(0, TAU), d = Math.sqrt(rnd()) * spread;
+    const bx = x + Math.cos(a) * d, bz = z + Math.sin(a) * d;
+    blades.push([bx, Math.max(terrainH(bx, bz), y - 0.02) - 0.005, bz, rr(hMin, hMax), w * rr(0.7, 1.2), a + rr(-0.6, 0.6), kind === 1 ? rr(0.05, 0.35) : kind === 2 ? rr(0.75, 1.35) : rr(0.25, 0.9), kind + rnd() * 0.9]);
+  }
+}
+{
+  let th = 0;
+  while (th < TAU) {
+    const R = pondR(th);
+    const out = rr(0.08, 0.55);
+    const [x, z] = snapToSdf(Math.cos(th) * (R + out), Math.sin(th) * (R + out), out);
+    if (pondSDF(x, z) > 0.02) addClump(x, z, 18 + Math.floor(rnd() * 22), 0.10, 0.34, 0.009, 0, 0.10);
+    th += rr(0.07, 0.2) / Math.max(R, 1.8);
+  }
+  for (let i = 0; i < 300; i++) {
+    const a = rr(0, TAU), r = rr(0.6, 5.0);
+    const x = Math.cos(a) * (pondR(a) + r), z = Math.sin(a) * (pondR(a) + r);
+    addClump(x, z, 12 + Math.floor(rnd() * 14), 0.06, 0.24, 0.008, 0, 0.09);
+  }
+  for (const [th2, n] of [[2.55, 18], [3.6, 14], [5.65, 16], [0.4, 12], [1.2, 14], [4.35, 14], [0.0, 12], [2.1, 12]]) {
+    const R = pondR(th2) + 0.02;
+    addClump(Math.cos(th2) * R, Math.sin(th2) * R, n, 0.45, 0.78, 0.016, 1, 0.12);
+  }
+  for (const c of SUSUKI) addClump(c.x, c.z, 46 + Math.floor(rnd() * 16), 0.60, 1.0, 0.016, 2, 0.16);
+  for (const c of TYPHA) for (let i = 0, tries = 0; i < 62 && tries < 600; tries++) {
+    const a = rr(0, TAU), d = Math.sqrt(rnd()) * 0.36, x = c.x + Math.cos(a) * d, z = c.z + Math.sin(a) * d;
+    const sd = pondSDF(x, z); if (sd > -0.02 || sd < -0.42) continue;
+    const y = terrainH(x, z);
+    blades.push([x, y - 0.005, z, -y + rr(1.05, 1.7), rr(0.014, 0.021), a + rr(-0.7, 0.7), rr(0.03, 0.2), 3 + rnd() * 0.9]); i++;
+  }
+}
+const NBL = blades.length;
+const bladeA = new Float32Array(NBL * 4), bladeB = new Float32Array(NBL * 4);
+blades.forEach((b, i) => { bladeA.set([b[0], b[1], b[2], b[3]], i * 4); bladeB.set([b[4], b[5], b[6], b[7]], i * 4); });
+const bladeGeo = new THREE.InstancedBufferGeometry();
+{
+  const pos = [], idx = []; const ns = 6;
+  for (let i = 0; i <= ns; i++) { const v = i / ns; pos.push(-0.5, v, 0, 0.5, v, 0); }
+  for (let i = 0; i < ns; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  bladeGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); bladeGeo.setIndex(idx);
+  bladeGeo.setAttribute('iA', new THREE.InstancedBufferAttribute(bladeA, 4));
+  bladeGeo.setAttribute('iB', new THREE.InstancedBufferAttribute(bladeB, 4));
+  bladeGeo.instanceCount = NBL;
+}
+const bladeMesh = new THREE.Mesh(bladeGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform vec2 uWind;
+attribute vec4 iA; attribute vec4 iB;
+varying vec3 vW; varying vec3 vN; varying float vV; varying float vKind; varying float vU;
+void main(){
+  float v = position.y; float u = position.x;
+  float h = iA.w; float kind = iB.w;
+  bool iris = kind > 0.99 && kind < 1.99, susu = kind > 1.99 && kind < 2.99, typha = kind > 2.99;
+  vec2 dir = vec2(cos(iB.y), sin(iB.y));
+  float sway = (sin(uTime * 1.6 + iA.x * 2.7 + iA.z * 3.1) * 0.05 + sin(uTime * 3.3 + iA.x * 9.0) * 0.015) * (1.0 + 2.5 * uWindK);
+  float bend = iB.z + sway * (iris ? 0.5 : susu ? 0.7 : typha ? 0.3 : 1.0);
+  float lean = bend * v * v;
+  float w = iB.x * (iris ? (1.0 - v * 0.75) : susu ? (1.0 - v * 0.96) : typha ? (1.0 - 0.95 * smoothstep(0.72, 1.0, v)) : (1.0 - v * 0.92));
+  vec3 side = vec3(-dir.y, 0.0, dir.x);
+  if (typha) { float tw = (fract(kind) - 0.45) * 2.6 * v; side = vec3(-sin(iB.y + tw), 0.0, cos(iB.y + tw)); }   // flat leaves with a slow twist
+  vec3 P = iA.xyz + vec3(dir.x * lean * h * 0.8, v * h * (1.0 - 0.25 * bend * bend * v), dir.y * lean * h * 0.8) + side * u * w;
+  if (susu) P.y -= 0.20 * h * bend * v * v * v;          // long susuki leaves arch over and droop at the tips
+  // gusts lay every blade over downwind
+  P.xz += uWind * uWindK * (0.10 + 0.03 * sin(uTime * 5.0 + iA.x * 4.0 + iA.z)) * h * v * v * (susu ? 1.5 : typha ? 0.55 : 1.0);
+  if (iris) P += vec3(dir.x, 0.0, dir.y) * abs(u) * w * 0.5;
+  if (susu) P += vec3(dir.x, 0.0, dir.y) * abs(u) * w * 0.15;
+  vec3 T = normalize(vec3(dir.x * 2.0 * bend * v * 0.8, 1.0, dir.y * 2.0 * bend * v * 0.8));
+  vN = normalize(cross(side, T));
+  vW = P; vV = v; vKind = kind; vU = u;
+  gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN; varying float vV; varying float vKind; varying float vU;
+void main(){
+  vec3 N = normalize(vN); if (!gl_FrontFacing) N = -N;
+  float k = fract(vKind);
+  bool iris = vKind > 0.99 && vKind < 1.99, susu = vKind > 1.99 && vKind < 2.99, typha = vKind > 2.99;
+  vec3 base = iris ? mix(vec3(0.07, 0.17, 0.04), vec3(0.14, 0.26, 0.06), k) : mix(vec3(0.07, 0.15, 0.03), vec3(0.20, 0.27, 0.06), k);
+  if (susu) {
+    base = mix(vec3(0.12, 0.19, 0.05), vec3(0.21, 0.25, 0.08), k);
+    base = mix(base, vec3(0.56, 0.56, 0.46), (1.0 - smoothstep(0.04, 0.11, abs(vU))) * 0.7 * smoothstep(0.04, 0.25, vV));   // white midrib
+    base = mix(base, vec3(0.40, 0.30, 0.13), smoothstep(0.55, 1.0, vV) * (0.3 + 0.5 * k));                                   // tips turning tawny
+  } else if (typha) {
+    base = mix(vec3(0.12, 0.19, 0.07), vec3(0.19, 0.24, 0.09), k);                                                  // grey-green, spongy
+    base = mix(base, vec3(0.42, 0.33, 0.16), smoothstep(0.62, 1.0, vV) * smoothstep(0.35, 0.9, k));                // autumn tips going straw-brown
+    base *= 0.92 + 0.08 * cos(vU * 6.2832 * 4.0);                                                                  // parallel veins
+  } else base = mix(base, vec3(0.32, 0.27, 0.10), smoothstep(0.55, 1.0, vV) * step(0.7, k) * 0.8);
+  base *= mix(0.45, 1.0, smoothstep(0.0, 0.5, vV));
+  if (iris) base *= 0.9 + 0.1 * cos(vU * 6.28);
+  float ao; float vis = rockShade(vW, ao);
+  vec3 V = normalize(cameraPosition - vW);
+  float back = sat(dot(-V, uSunDir)) * 0.6 + 0.2;
+  vec3 col = shadeLand(vW, N, base, 0.45, ao, vis, 0.25);
+  col += base * uSunCol * back * 0.35 * vis;
+  gl_FragColor = vec4(col, 1.0);
+}`, {}, { side: THREE.DoubleSide }));
+bladeMesh.frustumCulled = false;
+onLayers(bladeMesh, LAYER.MAIN, LAYER.REFL); scene.add(bladeMesh);
+
+// ---------------------------------------------------------------- susuki plumes
+// every flowering stalk is one strip, its panicle a spray of silky branch strips hung from the top;
+// stalk and branches share the same bending function so they move as one plant
+const plumeI = [];
+for (const c of SUSUKI) {
+  const n = 8 + Math.floor(rnd() * 5);
+  for (let i = 0; i < n; i++) {
+    const a = rr(0, TAU), d = Math.sqrt(rnd()) * 0.10;
+    const x = c.x + Math.cos(a) * d, z = c.z + Math.sin(a) * d, y = terrainH(x, z) - 0.01;
+    const H = rr(1.05, 1.55), leanAz = a + rr(-0.5, 0.5), lean = rr(0.05, 0.16), ph = rr(0, TAU), hue = rnd();
+    plumeI.push([x, y, z, H, leanAz, lean, ph, 0, 0, hue, 0, 0]);
+    const nb = 13 + Math.floor(rnd() * 5);
+    for (let b = 0; b < nb; b++) {
+      const f = b / (nb - 1);
+      plumeI.push([x, y, z, H, leanAz, lean, ph, 1, lerp(0.78, 0.995, f), rr(0, TAU), rr(0.14, 0.25) * (1 - 0.4 * f), rr(0.55, 1.05) + hue * 0.001]);
+    }
+  }
+}
+const NPLUME = plumeI.length;
+const plumeGeo = new THREE.InstancedBufferGeometry();
+{
+  const pos = [], idx = []; const ns = 8;
+  for (let i = 0; i <= ns; i++) { const v = i / ns; pos.push(-0.5, v, 0, 0.5, v, 0); }
+  for (let i = 0; i < ns; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  plumeGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); plumeGeo.setIndex(idx);
+  const A = new Float32Array(NPLUME * 4), B = new Float32Array(NPLUME * 4), C = new Float32Array(NPLUME * 4);
+  plumeI.forEach((q, i) => { A.set(q.slice(0, 4), i * 4); B.set(q.slice(4, 8), i * 4); C.set(q.slice(8, 12), i * 4); });
+  plumeGeo.setAttribute('iA', new THREE.InstancedBufferAttribute(A, 4));
+  plumeGeo.setAttribute('iB', new THREE.InstancedBufferAttribute(B, 4));
+  plumeGeo.setAttribute('iC', new THREE.InstancedBufferAttribute(C, 4));
+  plumeGeo.instanceCount = NPLUME;
+}
+const plumeMesh = new THREE.Mesh(plumeGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform vec2 uWind;
+attribute vec4 iA; attribute vec4 iB; attribute vec4 iC;
+varying vec3 vW; varying vec3 vN; varying vec2 vUV; varying float vKind; varying float vSeed;
+// tip offset of the stalk: its own lean, the steady breeze, gusts, and a slow nodding sway
+vec3 stalkTip(){
+  vec2 ld = vec2(cos(iB.x), sin(iB.x)); float ph = iB.z;
+  vec2 d = ld * iB.y + uWind * (0.04 + 0.26 * uWindK) * (0.85 + 0.15 * sin(uTime * 2.3 + ph));
+  d += vec2(sin(uTime * 1.25 + ph), cos(uTime * 1.05 + ph * 1.3)) * (0.025 + 0.05 * uWindK);
+  return vec3(d.x, 0.0, d.y) * iA.w;
+}
+vec3 stalkAt(float v, vec3 tip){
+  vec3 P = iA.xyz + vec3(0.0, iA.w * v, 0.0) + tip * v * v;
+  P.y -= dot(tip.xz, tip.xz) / iA.w * v * v * 0.5;      // bowing over shortens the reach upward
+  return P;
+}
+void main(){
+  float u = position.x, s = position.y;
+  vec3 tip = stalkTip();
+  vec3 P, T;
+  float wdt;
+  if (iB.w < 0.5) {
+    P = stalkAt(s, tip);
+    T = normalize(stalkAt(min(s + 0.02, 1.0), tip) - stalkAt(max(s - 0.02, 0.0), tip));
+    wdt = 0.0045 * (1.0 - 0.45 * s);
+  } else {
+    // a panicle branch: springs from the top of the stalk, flares out, droops under its own weight and trails downwind
+    vec3 S0 = stalkAt(iC.x, tip);
+    vec3 Ts = normalize(stalkAt(min(iC.x + 0.02, 1.0), tip) - stalkAt(iC.x - 0.02, tip));
+    vec2 bd = vec2(cos(iC.y), sin(iC.y));
+    float L = iC.z;
+    vec3 out0 = normalize(vec3(bd.x, 0.0, bd.y) * 0.55 + Ts);
+    vec3 pull = vec3(0.0, -iC.w, 0.0) + vec3(uWind.x, 0.0, uWind.y) * (0.12 + 0.7 * uWindK) + vec3(tip.x, 0.0, tip.z) / iA.w * 0.5;
+    P = S0 + out0 * L * s + pull * L * s * s;
+    T = normalize(out0 + 2.0 * pull * s);
+    wdt = 0.0105 * (0.35 + 0.65 * sin(3.1416 * min(s * 1.1, 1.0)));     // spindle-shaped silky tuft
+  }
+  vec3 toCam = normalize(cameraPosition - P);
+  vec3 side = normalize(cross(T, toCam));
+  P += side * u * wdt;
+  vN = normalize(cross(side, T)); if (dot(vN, toCam) < 0.0) vN = -vN;
+  vW = P; vUV = vec2(u, s); vKind = iB.w; vSeed = iC.y + iA.x * 3.1;
+  gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN; varying vec2 vUV; varying float vKind; varying float vSeed;
+void main(){
+  vec3 N = normalize(vN);
+  vec3 V = normalize(cameraPosition - vW);
+  float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
+  vec3 skyAmb = mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.6;
+  float back = sat(dot(-V, uSunDir));
+  vec3 col;
+  if (vKind < 0.5) {
+    vec3 base = mix(vec3(0.20, 0.22, 0.08), vec3(0.42, 0.36, 0.20), smoothstep(0.3, 1.0, vUV.y));
+    col = base * (uSunCol * (sat(dot(N, uSunDir)) + 0.3 * back) * vis + skyAmb);
+  } else {
+    // silky hairs: ragged, see-through edges; brilliant when the sun is behind them
+    float fib = vnoise(vec2(vUV.y * 46.0 + vSeed * 13.0, vUV.x * 3.0 + vSeed));
+    if (abs(vUV.x) * 2.0 > 0.45 + 0.55 * fib) discard;
+    vec3 base = mix(vec3(0.58, 0.47, 0.44), vec3(0.86, 0.80, 0.68), smoothstep(0.0, 0.7, vUV.y));
+    float fwd = pow(back, 5.0) * 2.6 + pow(back, 1.5) * 0.45;
+    col = base * (uSunCol * (sat(dot(N, uSunDir) * 0.5 + 0.5) * 0.5 + fwd) * vis + skyAmb * 0.95);
+  }
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide }));
+plumeMesh.frustumCulled = false;
+onLayers(plumeMesh, LAYER.MAIN, LAYER.REFL); scene.add(plumeMesh);
+
+// ---------------------------------------------------------------- cattail spikes (ガマの穂) and their seed fluff
+// a stalk carries the brown female spike with the withered male spike above it; some ripe spikes have burst open
+// into cotton, and the wind, above all a gust, strips seeds off them that drift across the pond and settle on the water
+const typhaS = [];
+for (const c of TYPHA) {
+  const n = 9 + Math.floor(rnd() * 4);
+  for (let i = 0, tries = 0; i < n && tries < 300; tries++) {
+    const a = rr(0, TAU), d = Math.sqrt(rnd()) * 0.28, x = c.x + Math.cos(a) * d, z = c.z + Math.sin(a) * d;
+    const sd = pondSDF(x, z); if (sd > -0.04 || sd < -0.4) continue;
+    const y = terrainH(x, z);
+    typhaS.push({ x, y, z, H: -y + rr(1.25, 1.8), az: a + rr(-0.4, 0.4), lean: rr(0.02, 0.07), ph: rr(0, TAU), burst: rnd() < 0.34 ? rr(0.55, 1.0) : 0, seed: rnd(), emit: rr(0, 4) });
+    i++;
+  }
+}
+const typhaGeo = new THREE.InstancedBufferGeometry();
+{
+  const pos = [], idx = [], vs = [];
+  for (let i = 0; i <= 14; i++) vs.push(0.79 * i / 14);                 // stalk
+  for (let i = 1; i <= 26; i++) vs.push(0.79 + 0.13 * i / 26);          // spike (finely, for its rounded ends)
+  for (let i = 1; i <= 8; i++) vs.push(0.92 + 0.08 * i / 8);            // withered male spike
+  for (const v of vs) pos.push(-1, v, 0, 1, v, 0);
+  for (let i = 0; i < vs.length - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  typhaGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); typhaGeo.setIndex(idx);
+  const A = new Float32Array(typhaS.length * 4), B = new Float32Array(typhaS.length * 4);
+  typhaS.forEach((q, i) => { q.burst = Math.round(q.burst * 100) / 100; A.set([q.x, q.y, q.z, q.H], i * 4); B.set([q.az, q.lean, q.ph, q.burst + q.seed * 0.004], i * 4); });
+  typhaGeo.setAttribute('iA', new THREE.InstancedBufferAttribute(A, 4));
+  typhaGeo.setAttribute('iB', new THREE.InstancedBufferAttribute(B, 4));
+  typhaGeo.instanceCount = typhaS.length;
+}
+const TYPHA_STALK = /* glsl */`
+uniform vec2 uWind;
+attribute vec4 iA; attribute vec4 iB;
+// stiff stalks: they lean a little, nod in the breeze and bow over in gusts
+vec3 stalkTip(){
+  vec2 ld = vec2(cos(iB.x), sin(iB.x)); float ph = iB.z;
+  vec2 d = ld * iB.y + uWind * (0.02 + 0.14 * uWindK) * (0.85 + 0.15 * sin(uTime * 2.1 + ph));
+  d += vec2(sin(uTime * 0.9 + ph), cos(uTime * 0.75 + ph * 1.3)) * (0.010 + 0.03 * uWindK);
+  return vec3(d.x, 0.0, d.y) * iA.w;
+}
+vec3 stalkAt(float v, vec3 tip){
+  vec3 P = iA.xyz + vec3(0.0, iA.w * v, 0.0) + tip * v * v;
+  P.y -= dot(tip.xz, tip.xz) / iA.w * v * v * 0.5;
+  return P;
+}`;
+const typhaMesh = new THREE.Mesh(typhaGeo, smat(/* glsl */`
+${GL_COMMON}
+${TYPHA_STALK}
+varying vec3 vW; varying vec3 vSide; varying vec3 vT; varying vec2 vUV; varying float vSpike; varying float vBurst; varying float vSeed;
+void main(){
+  float u = position.x, v = position.y;
+  vec3 tip = stalkTip();
+  vec3 P = stalkAt(v, tip);
+  vec3 T = normalize(stalkAt(min(v + 0.01, 1.0), tip) - stalkAt(max(v - 0.01, 0.0), tip));
+  float burst = floor(iB.w * 100.0 + 0.5) / 100.0;
+  float r = mix(0.0031, 0.0024, v);
+  float tt = (v - 0.85) / 0.055, spike = 0.0;
+  if (abs(tt) < 1.0) {
+    float pr = pow(1.0 - pow(abs(tt), 6.0), 1.0 / 6.0);
+    r = max(r, 0.0118 * (1.0 + 0.4 * burst) * pr); spike = pr;
+  }
+  if (v > 0.92) r = mix(0.0024, 0.0009, (v - 0.92) / 0.08);
+  vec3 toCam = normalize(cameraPosition - P);
+  vec3 side = normalize(cross(T, toCam));
+  P += side * u * r;
+  vW = P; vSide = side; vT = T; vUV = vec2(u, v); vSpike = spike; vBurst = burst; vSeed = fract(iB.w * 100.0) + iA.x;
+  gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vSide; varying vec3 vT; varying vec2 vUV; varying float vSpike; varying float vBurst; varying float vSeed;
+void main(){
+  float u = vUV.x, v = vUV.y;
+  vec3 V = normalize(cameraPosition - vW);
+  vec3 fwd = normalize(cross(vSide, vT)); if (dot(fwd, V) < 0.0) fwd = -fwd;
+  vec3 N = normalize(vSide * u + fwd * sqrt(max(1.0 - u * u, 0.0)));
+  vec3 alb; float rough = 0.6; float sheen = 0.0; float fluffy = 0.0;
+  if (vSpike > 0.0 && v > 0.79 && v < 0.91) {
+    // velvety brown spike; on a ripe one cotton is bursting out through the skin
+    float n = vnoise(vec2(v * 900.0, u * 3.0 + vSeed * 7.0)) * 0.5 + vnoise(vec2(v * 260.0 + vSeed, u * 1.5)) * 0.5;
+    alb = mix(vec3(0.17, 0.09, 0.045), vec3(0.27, 0.15, 0.07), n);
+    sheen = 0.6;
+    if (vBurst > 0.0) {
+      // patches where the skin has split and the packed seed hairs bulge out as soft, fibrous cotton
+      float patchN = vnoise(vec2(v * 55.0 + vSeed * 13.0, u * 1.2 + vSeed)) * 0.7 + vnoise(vec2(v * 160.0 - vSeed, u * 2.4)) * 0.3;
+      float fuzz = vnoise(vec2(v * 2200.0, u * 12.0 + vSeed * 9.0)) * 0.6 + vnoise(vec2(v * 5200.0 + 3.1, u * 28.0)) * 0.4;   // fine isotropic fuzz
+      float cot = smoothstep(0.66 - 0.3 * vBurst, 0.92 - 0.3 * vBurst, patchN) * (0.75 + 0.25 * fuzz);
+      if (cot > 0.35 && abs(u) > 0.74 + 0.26 * fuzz) discard;                                  // wispy outline where cotton bulges out
+      alb = mix(alb, mix(vec3(0.38, 0.33, 0.26), vec3(0.62, 0.57, 0.48), fuzz), cot);
+      fluffy = cot * 0.6;
+    }
+  } else if (v > 0.92) {
+    alb = vec3(0.42, 0.35, 0.22) * (0.8 + 0.3 * vnoise(vec2(v * 400.0, vSeed)));                                  // withered male spike
+  } else {
+    alb = mix(vec3(0.20, 0.23, 0.10), vec3(0.34, 0.30, 0.16), smoothstep(0.4, 0.79, v));
+  }
+  float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
+  float ndl = dot(N, uSunDir);
+  vec3 skyAmb = mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.6;
+  float back = pow(sat(dot(-V, uSunDir)), 3.0);
+  vec3 col = alb * (uSunCol * (sat(ndl) + fluffy * (0.35 * sat(-ndl) + 1.6 * back)) * vis + skyAmb);
+  col += alb * uSunCol * sheen * pow(1.0 - sat(dot(N, V)), 3.0) * 0.5 * vis;      // velvet rim
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide }));
+typhaMesh.frustumCulled = false;
+onLayers(typhaMesh, LAYER.MAIN, LAYER.REFL); scene.add(typhaMesh);
+// seed fluff: tiny parachutes of white hairs
+const MAXFLUFF = 420;
+const fluffA = new THREE.InstancedBufferAttribute(new Float32Array(MAXFLUFF * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const fluffB = new THREE.InstancedBufferAttribute(new Float32Array(MAXFLUFF * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const fluffGeo = new THREE.InstancedBufferGeometry();
+fluffGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+fluffGeo.setIndex([0, 1, 2, 0, 2, 3]);
+fluffGeo.setAttribute('iA', fluffA); fluffGeo.setAttribute('iB', fluffB); fluffGeo.instanceCount = 0;
+const fluffMesh = new THREE.Mesh(fluffGeo, smat(/* glsl */`
+${GL_COMMON}
+attribute vec4 iA; attribute vec4 iB;   // pos, radius | alpha, seed, spin, afloat
+varying vec2 vC; varying vec4 vB; varying vec3 vW; varying float vK;
+void main(){
+  vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+  vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+  float d = length(iA.xyz - cameraPosition);
+  float sz = max(iA.w, d * 0.0016);                // never smaller than about a pixel; fainter instead
+  vK = (iA.w / sz) * (iA.w / sz);
+  float c = cos(iB.z), s = sin(iB.z);
+  vec2 q = mat2(c, s, -s, c) * position.xy;
+  vC = q; vB = iB;
+  vec3 w = iA.xyz + (right * position.x + up * position.y) * sz;
+  vW = w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+varying vec2 vC; varying vec4 vB; varying vec3 vW; varying float vK;
+void main(){
+  float r = length(vC); if (r > 1.0) discard;
+  float a = atan(vC.y, vC.x);
+  float hairs = pow(0.5 + 0.5 * cos(a * 23.0 + vB.y * 40.0), 3.0) * smoothstep(1.0, 0.25, r);
+  float core = 1.0 - smoothstep(0.0, 0.22, r);
+  float al = min((0.75 * hairs + core) * vB.x, 1.0) * clamp(vK, 0.18, 1.0);
+  vec3 V = normalize(cameraPosition - vW);
+  float fwd = pow(sat(dot(-V, uSunDir)), 4.0);
+  float sh = sunShadow(vW, vec3(0.0, 1.0, 0.0));
+  vec3 col = vec3(0.95, 0.93, 0.88) * (mix(uSkyHor, uSkyTop, 0.5) * 0.7 + uSunCol * (0.35 + 1.8 * fwd) * sh);
+  gl_FragColor = vec4(fogLand(col, vW), al);
+}`, {}, { transparent: true, depthWrite: false }));
+fluffMesh.frustumCulled = false; fluffMesh.renderOrder = 6;
+onLayers(fluffMesh, LAYER.MAIN); scene.add(fluffMesh);
+const fluff = [];
+
+// ================================================================= garden plants on the banks
+// red spider lilies (彼岸花), leopard plants (ツワブキ), ferns (シダ) and sasanqua camellias (山茶花)
+function clearOfRocks(p, extra = 0.12) {
+  let x = p.x, z = p.z;
+  for (let it = 0; it < 10; it++) {
+    let moved = false;
+    for (const r of ROCKS) { const dx = x - r[0], dz = z - r[1], d = Math.hypot(dx, dz), R = r[2] + extra; if (d < R) { x = r[0] + dx / (d || 1) * R; z = r[1] + dz / (d || 1) * R; moved = true; } }
+    const sd = pondSDF(x, z);
+    if (sd < 0.22) { const [gx, gz] = pondGrad(x, z), gl = Math.hypot(gx, gz) || 1; x += gx / gl * (0.24 - sd); z += gz / gl * (0.24 - sd); moved = true; }
+    if (!moved) break;
+  }
+  return { x, z, y: terrainH(x, z) };
+}
+const v3add = (a, b, k = 1) => [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k];
+const v3n = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const v3x = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+function bez3(p0, p1, p2, n) { const out = []; for (let i = 0; i <= n; i++) { const t = i / n, a = (1 - t) * (1 - t), b = 2 * (1 - t) * t, c = t * t; out.push([a * p0[0] + b * p1[0] + c * p2[0], a * p0[1] + b * p1[1] + c * p2[1], a * p0[2] + b * p1[2] + c * p2[2]]); } return out; }
+
+// ---------------------------------------------------------------- thin parts: camera-facing ribbons
+// stalks, tepals, stamens, petioles — each a strip that turns to face the camera, with a rounded fake normal
+const RIB = { p: [], t: [], w: [], c: [], s: [], idx: [] };
+function ribbon(pts, wf, col, sway) {
+  const base = RIB.p.length / 3, n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i], a = pts[Math.max(i - 1, 0)], b = pts[Math.min(i + 1, n - 1)];
+    const tx = b[0] - a[0], ty = b[1] - a[1], tz = b[2] - a[2], tl = Math.hypot(tx, ty, tz) || 1;
+    const u = i / (n - 1), w = wf(u), cc = typeof col === 'function' ? col(u) : col;
+    for (const sg of [-1, 1]) {
+      RIB.p.push(p[0], p[1], p[2]); RIB.t.push(tx / tl, ty / tl, tz / tl); RIB.w.push(sg * w);
+      RIB.c.push(cc[0], cc[1], cc[2], cc[3]); RIB.s.push(sway[0], sway[1], Math.max(p[1] - sway[2], 0) * sway[4], sway[3]);
+    }
+  }
+  for (let i = 0; i < n - 1; i++) { const a = base + i * 2; RIB.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+}
+// ---------------------------------------------------------------- flat cards: leaves and flowers cut out in the shader
+const CARD = { p: [], n: [], x: [], s: [] };
+function card(pos, size, nrm, xax, kind, seed, sway) {
+  const N = v3n(nrm); let X = v3n(xax); const d = X[0] * N[0] + X[1] * N[1] + X[2] * N[2]; X = v3n([X[0] - N[0] * d, X[1] - N[1] * d, X[2] - N[2] * d]);
+  CARD.p.push(pos[0], pos[1], pos[2], size); CARD.n.push(N[0], N[1], N[2], kind); CARD.x.push(X[0], X[1], X[2], seed);
+  CARD.s.push(sway[0], sway[1], Math.max(pos[1] - sway[2], 0) * sway[4], sway[3]);
+}
+
+// ---------------------------------------------------------------- 彼岸花 (red spider lily)
+// leafless scapes topped by umbels of 5-7 florets: six narrow, wavy tepals rolled right back, and far longer stamens
+// sweeping up and out
+const HIGAN = [[-2.05, 0.5], [-1.5, 0.5], [1.28, 0.45], [3.38, 0.55], [-0.5, 0.75]].map(([th, off]) => clearOfRocks(polarAt(th, off)));
+const LILY_RED = [0.50, 0.018, 0.022, 1], LILY_STAMEN = [0.46, 0.025, 0.028, 1], LILY_ANTHER = [0.30, 0.13, 0.05, 0], LILY_STALK = [0.06, 0.14, 0.035, 0];
+for (const g of HIGAN) {
+  const n = 9 + Math.floor(rnd() * 8);
+  for (let i = 0; i < n; i++) {
+    const a = rr(0, TAU), d = Math.sqrt(rnd()) * 0.2, x = g.x + Math.cos(a) * d, z = g.z + Math.sin(a) * d, y0 = terrainH(x, z);
+    const H = rr(0.32, 0.5), lx = rr(-0.04, 0.04), lz = rr(-0.04, 0.04), sway = [x, z, y0, rr(0, TAU), 1];
+    const top = [x + lx, y0 + H, z + lz];
+    ribbon(bez3([x, y0 - 0.01, z], [x + lx * 0.3, y0 + H * 0.5, z + lz * 0.3], top, 10), (u) => 0.0032 - 0.0009 * u, LILY_STALK, sway);
+    const nf = 5 + Math.floor(rnd() * 3), rot = rr(0, TAU);
+    for (let f = 0; f < nf; f++) {
+      const fa = rot + f / nf * TAU + rr(-0.2, 0.2), el = rr(0.12, 0.5);
+      const dv = [Math.cos(fa) * Math.cos(el), Math.sin(el), Math.sin(fa) * Math.cos(el)];
+      const pb = [top[0] + dv[0] * 0.018, top[1] + dv[1] * 0.018 + 0.005, top[2] + dv[2] * 0.018];
+      ribbon([top, pb], () => 0.0012, LILY_STALK, sway);
+      const e1 = v3n(v3x(dv, [0, 1, 0])), e2 = v3n(v3x(dv, e1));
+      for (let k = 0; k < 6; k++) {
+        const pa = k / 6 * TAU + rr(-0.15, 0.15), rv = v3add(v3add([0, 0, 0], e1, Math.cos(pa)), e2, Math.sin(pa));
+        const L = rr(0.034, 0.046);
+        const p1 = v3add(v3add(pb, dv, L * 0.5), rv, L * 0.22), p2 = v3add(v3add(v3add(pb, rv, L * 0.72), dv, -L * 0.12), [0, 1, 0], L * 0.08);
+        const pts = bez3(pb, p1, p2, 8);
+        pts.forEach((q, j) => { const wv = 0.0016 * Math.sin(j * 2.3 + k) * (j / 8); q[0] += e2[0] * wv; q[1] += e2[1] * wv; q[2] += e2[2] * wv; });   // wavy margins
+        ribbon(pts, (u) => 0.0027 * Math.pow(Math.sin(Math.PI * Math.min(u * 1.1 + 0.06, 1)), 0.6), LILY_RED, sway);
+      }
+      for (let k = 0; k < 7; k++) {
+        const pa = k / 7 * TAU + rr(-0.2, 0.2), rv = v3add(v3add([0, 0, 0], e1, Math.cos(pa)), e2, Math.sin(pa));
+        const L = k === 6 ? 0.088 : rr(0.064, 0.078);
+        const p1 = v3add(v3add(pb, dv, L * 0.55), rv, 0.006), p2 = v3add(v3add(v3add(pb, dv, L * 0.82), rv, 0.013), [0, 1, 0], L * 0.36);
+        ribbon(bez3(pb, p1, p2, 7), () => 0.00055, LILY_STAMEN, sway);
+        if (k < 6) ribbon([p2, v3add(p2, v3n(v3add(rv, [0, 1, 0])), 0.0035)], () => 0.0011, LILY_ANTHER, sway);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------- ツワブキ (leopard plant)
+// glossy, dark kidney-shaped leaves held out on long stalks, and loose sprays of yellow daisies above them
+const TSUWA = [clearOfRocks({ x: LANT.x + 0.32, z: LANT.z + 0.18 }, 0.18), clearOfRocks({ x: LANT.x - 0.36, z: LANT.z + 0.08 }, 0.18), clearOfRocks(polarAt(-2.62, 0.78)), clearOfRocks(polarAt(1.92, 0.68))];
+for (const g of TSUWA) {
+  const nl = 7 + Math.floor(rnd() * 5), y0 = terrainH(g.x, g.z);
+  for (let i = 0; i < nl; i++) {
+    const a = i / nl * TAU + rr(-0.3, 0.3), len = rr(0.16, 0.3), sz = rr(0.06, 0.1);
+    const dir = [Math.cos(a), 0, Math.sin(a)], sway = [g.x, g.z, y0, rr(0, TAU), 0.6];
+    const base = [g.x + dir[0] * 0.02, y0, g.z + dir[2] * 0.02];
+    const tip = [g.x + dir[0] * len * 0.55, y0 + len * rr(0.7, 0.95), g.z + dir[2] * len * 0.55];
+    ribbon(bez3(base, [base[0] + dir[0] * len * 0.15, y0 + len * 0.6, base[2] + dir[2] * len * 0.15], tip, 8), () => 0.0028, [0.06, 0.07, 0.03, 0], sway);
+    const nrm = v3n([dir[0] * -0.25 + rr(-0.12, 0.12), 1, dir[2] * -0.25 + rr(-0.12, 0.12)]);
+    card(v3add(tip, dir, sz * 0.82), sz, nrm, dir, 0, rnd(), sway);
+  }
+  // flower stalks rise above the leaves and branch into a few heads
+  const nfs = 2 + Math.floor(rnd() * 2);
+  for (let j = 0; j < nfs; j++) {
+    const a = rr(0, TAU), x = g.x + Math.cos(a) * 0.04, z = g.z + Math.sin(a) * 0.04, H = rr(0.42, 0.6), sway = [x, z, y0, rr(0, TAU), 1];
+    const top = [x + rr(-0.05, 0.05), y0 + H, z + rr(-0.05, 0.05)];
+    ribbon(bez3([x, y0, z], [x, y0 + H * 0.5, z], top, 9), (u) => 0.0028 - 0.0008 * u, [0.12, 0.12, 0.06, 0], sway);
+    const nh = 3 + Math.floor(rnd() * 4);
+    for (let k = 0; k < nh; k++) {
+      const ha = rr(0, TAU), hd = [Math.cos(ha), 0, Math.sin(ha)];
+      const hp = [top[0] + hd[0] * rr(0.03, 0.08), top[1] + rr(0.02, 0.07), top[2] + hd[2] * rr(0.03, 0.08)];
+      ribbon(bez3(v3add(top, [0, -0.04, 0]), v3add(top, hd, 0.02), hp, 4), () => 0.0014, [0.12, 0.12, 0.06, 0], sway);
+      card(v3add(hp, [0, 0.003, 0]), rr(0.022, 0.026), [hd[0] * 0.7 + rr(-0.2, 0.2), 1, hd[2] * 0.7 + rr(-0.2, 0.2)], [hd[2], 0, -hd[0]], 1, rnd(), sway);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- 山茶花 (sasanqua camellia)
+// two shrubs overhanging the water: dark, glossy leaves and single pink flowers that shed their petals one by one
+const SAZANKA = [[2.45, 0.62, 0], [0.55, 0.62, 1]].map(([th, off, kind]) => Object.assign(clearOfRocks(polarAt(th, off), 0.2), { kind, flowers: [], petT: rr(1, 4) }));
+for (const sh of SAZANKA) {
+  const y0 = terrainH(sh.x, sh.z), rx = rr(0.42, 0.52), ry = rr(0.48, 0.6), rz = rr(0.42, 0.52), cy = y0 + ry * 0.95;
+  const sway = [sh.x, sh.z, y0, rr(0, TAU), 0.18];
+  sh.c = [sh.x, cy, sh.z]; sh.r = [rx, ry, rz]; sh.seed = rnd();
+  // a few stems at the base
+  for (let i = 0; i < 4; i++) { const a = rr(0, TAU), top = [sh.x + Math.cos(a) * rx * 0.4, cy - ry * 0.2, sh.z + Math.sin(a) * rz * 0.4]; ribbon(bez3([sh.x + rr(-0.03, 0.03), y0, sh.z + rr(-0.03, 0.03)], [sh.x, y0 + 0.2, sh.z], top, 6), (u) => 0.012 - 0.006 * u, [0.08, 0.06, 0.045, 0], sway); }
+  for (let i = 0; i < 2200; i++) {
+    let v = v3n([rr(-1, 1), rr(-0.55, 1), rr(-1, 1)]); const s = rr(0.8, 1.03);
+    const p = [sh.x + v[0] * rx * s, cy + v[1] * ry * s, sh.z + v[2] * rz * s];
+    if (p[1] < y0 + 0.08) continue;
+    const nrm = v3n([v[0] + rr(-0.6, 0.6), v[1] + 0.6 + rr(-0.4, 0.4), v[2] + rr(-0.6, 0.6)]);
+    card(p, rr(0.028, 0.038), nrm, [rr(-1, 1), rr(-0.3, 0.3), rr(-1, 1)], 2, rnd(), sway);
+  }
+  for (let i = 0; i < 46; i++) {
+    let v = v3n([rr(-1, 1), rr(-0.3, 1), rr(-1, 1)]); const s = rr(0.98, 1.06);
+    const p = [sh.x + v[0] * rx * s, cy + v[1] * ry * s, sh.z + v[2] * rz * s];
+    const nrm = v3n([v[0], v[1] + 0.35, v[2]]);
+    card(p, rr(0.026, 0.034), nrm, [rr(-1, 1), 0, rr(-1, 1)], 3 + sh.kind * 0.5, rnd(), sway);
+    sh.flowers.push(p);
+  }
+}
+
+// ---------------------------------------------------------------- シダ (ferns)
+// clumps of arching, twice-cut fronds in the shade of stones, the lantern and the trees
+const FERNS = [clearOfRocks({ x: LANT.x - 0.1, z: LANT.z - 0.38 }, 0.15), clearOfRocks({ x: LANT.x + 0.45, z: LANT.z - 0.15 }, 0.15)]
+  .concat([[-2.45, 0.85], [-0.35, 0.95], [0.3, 0.78], [1.55, 0.85], [2.2, 0.85], [3.05, 0.9], [-2.95, 0.8], [-1.1, 0.95]].map(([th, off]) => clearOfRocks(polarAt(th, off))));
+const fernI = [];
+for (const g of FERNS) {
+  const n = 7 + Math.floor(rnd() * 5), y0 = terrainH(g.x, g.z), old = rnd();
+  for (let i = 0; i < n; i++) {
+    const az = i / n * TAU + rr(-0.35, 0.35), L = rr(0.28, 0.5), e0 = rr(0.85, 1.25), k = rr(1.2, 2.1);
+    fernI.push([g.x + Math.cos(az) * 0.02, y0, g.z + Math.sin(az) * 0.02, L, az, e0, k, L * rr(0.2, 0.27), rnd(), rnd() < 0.18 + 0.25 * old ? rr(0.5, 1) : rr(0, 0.25), 0, 0]);
+  }
+}
+const NFERN = fernI.length;
+const fernGeo = new THREE.InstancedBufferGeometry();
+{
+  const pos = [], idx = [], nu = 3, nv = 24;
+  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) pos.push(i / (nu - 1) * 2 - 1, j / (nv - 1), 0);
+  for (let j = 0; j < nv - 1; j++) for (let i = 0; i < nu - 1; i++) { const a = j * nu + i; idx.push(a, a + 1, a + nu, a + 1, a + nu + 1, a + nu); }
+  fernGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); fernGeo.setIndex(idx);
+  const A = new Float32Array(NFERN * 4), B = new Float32Array(NFERN * 4), C = new Float32Array(NFERN * 4);
+  fernI.forEach((q, i) => { A.set(q.slice(0, 4), i * 4); B.set(q.slice(4, 8), i * 4); C.set(q.slice(8, 12), i * 4); });
+  fernGeo.setAttribute('iA', new THREE.InstancedBufferAttribute(A, 4));
+  fernGeo.setAttribute('iB', new THREE.InstancedBufferAttribute(B, 4));
+  fernGeo.setAttribute('iC', new THREE.InstancedBufferAttribute(C, 4));
+  fernGeo.instanceCount = NFERN;
+}
+const fernMesh = new THREE.Mesh(fernGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform vec2 uWind;
+attribute vec4 iA; attribute vec4 iB; attribute vec4 iC;   // crown, length | azimuth, start elevation, curl, width | seed, age
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying vec2 vS;
+void main(){
+  float s = position.y, u = position.x, L = iA.w;
+  vec2 hd = vec2(cos(iB.x), sin(iB.x));
+  float bob = sin(uTime * 1.6 + iC.x * 6.28) * (0.03 + 0.1 * uWindK);
+  float e0 = iB.y + bob * 0.5, k = iB.z;
+  // closed-form arc: the rachis rises from the crown and curls over
+  float e = e0 - k * s;
+  float sx = (sin(e0) - sin(e)) / k, sy = (cos(e) - cos(e0)) / k;
+  vec3 C = iA.xyz + (vec3(hd.x, 0.0, hd.y) * sx + vec3(0.0, sy, 0.0)) * L;
+  C.xz += uWind * uWindK * 0.12 * s * s * L;
+  vec3 T = normalize(vec3(hd.x * cos(e), sin(e), hd.y * cos(e)));
+  vec3 side = vec3(-hd.y, 0.0, hd.x);
+  float W = iB.w * pow(sin(3.1416 * min(s * 1.04 + 0.03, 1.0)), 0.75) * (1.0 - 0.35 * s);
+  vec3 P = C + side * u * W - vec3(0.0, 1.0, 0.0) * abs(u) * W * 0.28;   // pinnae droop towards their tips
+  vN = normalize(cross(side, T)); if (vN.y < 0.0) vN = -vN;
+  vW = P; vQ = vec2(u, s); vS = iC.xy;
+  gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying vec2 vS;
+void main(){
+  float u = abs(vQ.x), s = vQ.y;
+  // twice-cut frond: pinnae angled towards the tip, each edged with little rounded pinnules
+  float NP = 16.0 + 6.0 * vS.x;
+  float t = s * NP - u * 1.25;
+  float v = fract(t) - 0.5;
+  float pw = (0.36 + 0.08 * sin(u * 30.0 + vS.x * 9.0)) * (1.0 - 0.75 * pow(u, 1.6));
+  bool rachis = u < 0.045;
+  if (!rachis && (abs(v) > pw || u > 0.98)) discard;
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  float age = vS.y;
+  vec3 alb = mix(vec3(0.035, 0.10, 0.018), vec3(0.075, 0.16, 0.03), smoothstep(0.2, 1.0, s));
+  alb = mix(alb, vec3(0.19, 0.13, 0.04), age);
+  if (rachis) alb = mix(vec3(0.08, 0.07, 0.03), alb, 0.4);
+  alb *= 0.85 + 0.3 * vnoise(vec2(t * 3.0, u * 10.0));
+  vec3 N = normalize(vN), V = normalize(cameraPosition - vW);
+  if (dot(N, V) < 0.0) N = -N;
+  float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
+  float back = pow(sat(dot(-V, uSunDir)), 2.0);
+  vec3 col = alb * (uSunCol * (sat(dot(N, uSunDir)) + 0.6 * back) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55 * ao);
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide }));
+fernMesh.frustumCulled = false;
+onLayers(fernMesh, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(fernMesh);
+
+// ---------------------------------------------------------------- the ribbon and card meshes
+G.uViewH = G.uViewH || { value: 900 };
+const ribGeo = new THREE.BufferGeometry();
+ribGeo.setAttribute('position', new THREE.Float32BufferAttribute(RIB.p, 3));
+ribGeo.setAttribute('aT', new THREE.Float32BufferAttribute(RIB.t, 3));
+ribGeo.setAttribute('aW', new THREE.Float32BufferAttribute(RIB.w, 1));
+ribGeo.setAttribute('aC', new THREE.Float32BufferAttribute(RIB.c, 4));
+ribGeo.setAttribute('aS', new THREE.Float32BufferAttribute(RIB.s, 4));
+ribGeo.setIndex(RIB.idx);
+const PLANT_SWAY = /* glsl */`
+uniform vec2 uWind;
+vec3 plantSway(vec4 sw){
+  float h = sw.z, ph = sw.w;
+  vec2 d = vec2(sin(uTime * 1.3 + ph), cos(uTime * 1.07 + ph * 1.7)) * (0.010 + 0.028 * uWindK) + uWind * (0.006 + 0.06 * uWindK) * (0.8 + 0.2 * sin(uTime * 2.1 + ph));
+  return vec3(d.x, -0.25 * dot(d, d), d.y) * h * h * 4.0;
+}`;
+const ribMesh = new THREE.Mesh(ribGeo, smat(/* glsl */`
+${GL_COMMON}
+${PLANT_SWAY}
+uniform float uViewH;
+attribute vec3 aT; attribute float aW; attribute vec4 aC; attribute vec4 aS;
+varying vec3 vW; varying vec3 vSide; varying vec3 vT; varying float vU; varying vec4 vC;
+void main(){
+  vec3 P = position + plantSway(aS);
+  vec3 toCam = cameraPosition - P; float dist = length(toCam); toCam /= dist;
+  vec3 side = normalize(cross(aT, toCam) + vec3(1e-6, 0.0, 0.0));
+  float mpp = 2.0 * dist / (uViewH * projectionMatrix[1][1]);     // metres per pixel here
+  P += side * sign(aW) * max(abs(aW), 0.5 * mpp);                 // never thinner than half a pixel: no flicker
+  vW = P; vSide = side; vT = aT; vU = sign(aW); vC = aC;
+  gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vSide; varying vec3 vT; varying float vU; varying vec4 vC;
+void main(){
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  vec3 V = normalize(cameraPosition - vW);
+  vec3 fwd = normalize(cross(vSide, vT)); if (dot(fwd, V) < 0.0) fwd = -fwd;
+  float u = clamp(vU, -1.0, 1.0); vec3 N = normalize(vSide * u + fwd * sqrt(max(1.0 - u * u, 0.0)));
+  float petal = vC.a;
+  float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
+  float ndl = dot(N, uSunDir), back = pow(sat(dot(-V, uSunDir)), 2.0);
+  vec3 col = vC.rgb * (uSunCol * (sat(ndl) + petal * (0.35 * sat(-ndl) + 0.9 * back)) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.6 * ao);
+  vec3 H = normalize(uSunDir + V);
+  col += uSunCol * ggx(max(dot(N, H), 0.0), 0.4) * 0.03 * vis * sat(ndl);
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`));
+ribMesh.frustumCulled = false;
+onLayers(ribMesh, LAYER.MAIN, LAYER.REFL); scene.add(ribMesh);
+const NCARD = CARD.p.length / 4;
+const cardGeo = new THREE.InstancedBufferGeometry();
+cardGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+cardGeo.setIndex([0, 1, 2, 0, 2, 3]);
+cardGeo.setAttribute('iP', new THREE.InstancedBufferAttribute(new Float32Array(CARD.p), 4));
+cardGeo.setAttribute('iN', new THREE.InstancedBufferAttribute(new Float32Array(CARD.n), 4));
+cardGeo.setAttribute('iX', new THREE.InstancedBufferAttribute(new Float32Array(CARD.x), 4));
+cardGeo.setAttribute('iS', new THREE.InstancedBufferAttribute(new Float32Array(CARD.s), 4));
+cardGeo.instanceCount = NCARD;
+const cardMesh = new THREE.Mesh(cardGeo, smat(/* glsl */`
+${GL_COMMON}
+${PLANT_SWAY}
+attribute vec4 iP; attribute vec4 iN; attribute vec4 iX; attribute vec4 iS;
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying float vKind; varying float vSeed;
+void main(){
+  vec3 N = iN.xyz, X = iX.xyz, Y = cross(N, X);
+  vec2 q = position.xy;
+  float cup = iN.w < 0.5 ? 0.10 : iN.w > 2.9 ? 0.18 : 0.06;           // leaves and flowers are a little cupped
+  vec3 P = iP.xyz + plantSway(iS) + (X * q.x + Y * q.y + N * cup * dot(q, q)) * iP.w;
+  vW = P; vN = N; vQ = q; vKind = iN.w; vSeed = iX.w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying float vKind; varying float vSeed;
+void main(){
+  vec2 q = vQ; float r = length(q), a = atan(q.y, q.x);
+  vec3 alb; float rough = 0.5, spec = 0.05, trans = 0.3;
+  vec3 N = normalize(vN);
+  if (vKind < 0.5) {
+    // ツワブキ leaf: kidney-shaped with a deep, narrow notch where the stalk joins; wavy, faintly toothed margin
+    float da = abs(atan(q.x, -q.y));
+    float R = 0.96 * (1.0 + 0.03 * sin(a * 11.0 + vSeed * 20.0)) * (1.0 - 0.85 * (1.0 - smoothstep(0.0, 0.42, da)) * smoothstep(0.0, 0.3, r));
+    if (r > R) discard;
+    if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+    vec2 b = q - vec2(0.0, -0.08); float va = atan(b.x, b.y);
+    float vein = 1.0 - smoothstep(0.0, 0.05, abs(fract(va * 2.2 + 0.5) - 0.5)) ;
+    alb = mix(vec3(0.010, 0.032, 0.008), vec3(0.025, 0.06, 0.014), vnoise(q * 3.0 + vSeed * 9.0)) * (1.0 + 0.5 * vein * smoothstep(0.1, 0.6, length(b)));
+    rough = 0.24; spec = 0.09; trans = 0.15;
+  } else if (vKind < 1.5) {
+    // ツワブキ flower: eleven strap-shaped yellow rays around an orange-yellow disc
+    float nr = 11.0, f = fract(a / 6.2832 * nr + vSeed) - 0.5;
+    bool disc = r < 0.30;
+    if (!disc && (abs(f) > 0.34 * (1.0 - smoothstep(0.85, 1.0, r)) || r > 0.98)) discard;
+    if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+    alb = disc ? mix(vec3(0.42, 0.24, 0.01), vec3(0.62, 0.40, 0.02), vnoise(q * 30.0)) : vec3(0.78, 0.50, 0.012) * (0.9 + 0.15 * cos(f * 20.0));
+    trans = 0.7; spec = 0.03;
+  } else if (vKind < 2.5) {
+    // 山茶花 leaf: elliptic with a short point, finely toothed, dark and glossy
+    float y = q.y, w = 0.44 * sqrt(max(1.0 - y * y, 0.0)) * (1.0 - 0.3 * smoothstep(0.35, 1.0, y));
+    w *= 1.0 - 0.04 * fract((y + 1.0) * 14.0);
+    if (abs(q.x) > w) discard;
+    if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+    float mid = 1.0 - smoothstep(0.0, 0.03, abs(q.x));
+    alb = mix(vec3(0.022, 0.055, 0.016), vec3(0.05, 0.10, 0.024), hash11(vSeed * 7.0) * hash11(vSeed * 3.0)) * (1.0 + 0.4 * mid);
+    rough = 0.3; spec = 0.05; trans = 0.12;
+  } else {
+    // 山茶花 flower: six broad, slightly notched petals, white-hearted, with a boss of yellow stamens
+    float np = 6.0, pa = fract(a / 6.2832 * np + vSeed) - 0.5;
+    float R = 0.66 + 0.34 * pow(cos(pa * 3.1416), 0.55) - 0.06 * (1.0 - smoothstep(0.0, 0.08, abs(pa)));
+    if (r > R) discard;
+    if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+    bool white = vKind > 3.25;
+    vec3 edge = white ? vec3(0.88, 0.50, 0.50) : vec3(0.80, 0.18, 0.20), heart = white ? vec3(0.90, 0.88, 0.84) : vec3(0.90, 0.62, 0.58);
+    alb = mix(heart, edge, smoothstep(0.25, 0.95, r)) * (0.93 + 0.1 * cos(pa * 14.0));
+    float boss = 1.0 - smoothstep(0.22, 0.28, r);
+    alb = mix(alb, mix(vec3(0.80, 0.55, 0.03), vec3(0.92, 0.80, 0.30), step(0.55, hash12(floor(q * 46.0)))), boss * step(0.07, r));
+    if (r < 0.07) alb = vec3(0.70, 0.75, 0.55);
+    trans = 0.8; spec = 0.03;
+  }
+  vec3 V = normalize(cameraPosition - vW);
+  if (vKind > 2.9) N = normalize(N + vec3(0.0, 0.25, 0.0));
+  if (dot(N, V) < 0.0) N = -N;
+  float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
+  float ndl = dot(N, uSunDir), back = pow(sat(dot(-V, uSunDir)), 2.0);
+  vec3 col = alb * (uSunCol * (sat(ndl) + trans * (0.4 * sat(-ndl) + 0.8 * back)) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55 * ao);
+  vec3 H = normalize(uSunDir + V);
+  col += uSunCol * ggx(max(dot(N, H), 0.0), rough) * spec * vis * sat(ndl);
+  col += mix(skyColor(reflect(-V, N), 0.0), alb * 4.0, 0.3) * (0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0)) * spec * 0.35;
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide }));
+cardMesh.frustumCulled = false;
+// the inside of each sasanqua: a solid, leafy mass so the shrub reads as dense, not as a shell of leaves
+{
+  const base = toIndexed(new THREE.IcosahedronGeometry(1, 3)), bp = base.attributes.position, bi = base.index.array;
+  const pos = [], idx = [], sd = [];
+  for (const sh of SAZANKA) {
+    const o = pos.length / 3;
+    for (let i = 0; i < bp.count; i++) {
+      let dx = bp.getX(i), dy = bp.getY(i), dz = bp.getZ(i);
+      const n = 0.86 + 0.1 * fbm(dx * 1.7 + sh.seed * 30, dz * 1.7 + dy * 1.4, 3);
+      pos.push(sh.c[0] + dx * sh.r[0] * n, Math.max(sh.c[1] + dy * sh.r[1] * n, terrainH(sh.x, sh.z) + 0.1), sh.c[2] + dz * sh.r[2] * n); sd.push(sh.seed);
+    }
+    for (let i = 0; i < bi.length; i++) idx.push(bi[i] + o);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('aSeed', new THREE.Float32BufferAttribute(sd, 1));
+  g.setIndex(idx); g.computeVertexNormals();
+  const core = new THREE.Mesh(g, smat(/* glsl */`
+${GL_COMMON}
+attribute float aSeed; varying vec3 vW; varying vec3 vN; varying float vSeed;
+void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; vN = normalize(mat3(modelMatrix) * normal); vSeed = aSeed; gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN; varying float vSeed;
+void main(){
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  vec4 lv = voronoiV(vW.xz * 34.0 + vW.y * vec2(21.0, -17.0) + vSeed * 9.0);
+  float leaf = smoothstep(0.55, 0.2, lv.z);
+  vec3 N = normalize(normalize(vN) + vec3(lv.x, 0.4, lv.y) * 0.6);
+  vec3 alb = mix(vec3(0.010, 0.026, 0.008), vec3(0.03, 0.07, 0.018), leaf * hash11(lv.w * 17.0));
+  float ao = mix(0.35, 0.85, leaf) * mix(0.6, 1.0, smoothstep(-0.3, 0.7, normalize(vN).y));
+  gl_FragColor = vec4(shadeLand(vW, N, alb, 0.3, ao, 1.0, 0.15 * leaf), 1.0);
+}`));
+  core.frustumCulled = false;
+  onLayers(core, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(core);
+}
+onLayers(cardMesh, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(cardMesh);
+
+// ---------------------------------------------------------------- Japanese maples
+const TREE_DEF = [
+  [-0.55, 1.5, 1.05, [-0.15, 0.32], 0.45, 1.0], [-2.55, 1.4, 0.95, [0.25, 0.25], 0.12, 0.95], [0.05, 1.8, 0.85, [-0.35, 0.05], 0.95, 0.85],
+  [3.10, 1.5, 0.9, [0.32, -0.08], 0.3, 0.9], [-1.57, 2.7, 1.25, [0.0, 0.1], 0.05, 1.1], [0.95, 1.7, 0.9, [-0.2, -0.2], 0.6, 0.85],
+  [-1.00, 2.3, 1.1, [-0.1, 0.2], 0.7, 1.0], [2.30, 1.8, 0.95, [0.2, -0.15], 0.2, 0.95], [-2.10, 2.5, 1.15, [0.1, 0.25], 0.35, 1.05],
+].map(([th, off, h, lean, autumn, spread]) => Object.assign(polarAt(th, off), { h, lean, autumn, spread }));
+TREE_DEF.forEach((t, i) => G.uTrees.value[i].set(t.x, t.z));
+const barkG = { pos: [], nor: [], idx: [], seed: [] };
+const leafI = [];
+function tubeSeg(pts, r0, r1, seed) {
+  const nr = 7; const base = barkG.pos.length / 3;
+  for (let i = 0; i < pts.length; i++) {
+    const t = i / (pts.length - 1);
+    const p0 = pts[Math.max(i - 1, 0)], p1 = pts[Math.min(i + 1, pts.length - 1)];
+    let T = new THREE.Vector3(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]).normalize();
+    let U = new THREE.Vector3(0, 1, 0).cross(T); if (U.lengthSq() < 1e-4) U.set(1, 0, 0); U.normalize();
+    const W = new THREE.Vector3().crossVectors(T, U);
+    const r = lerp(r0, r1, t);
+    for (let j = 0; j < nr; j++) {
+      const a = j / nr * TAU; const n = U.clone().multiplyScalar(Math.cos(a)).addScaledVector(W, Math.sin(a));
+      barkG.pos.push(pts[i][0] + n.x * r, pts[i][1] + n.y * r, pts[i][2] + n.z * r); barkG.nor.push(n.x, n.y, n.z); barkG.seed.push(seed);
+    }
+  }
+  for (let i = 0; i < pts.length - 1; i++) for (let j = 0; j < nr; j++) {
+    const a = base + i * nr + j, b = base + i * nr + (j + 1) % nr, c = a + nr, d = b + nr;
+    barkG.idx.push(a, c, b, b, c, d);
+  }
+}
+function growBranch(p, dir, len, rad, depth, tree, ti) {
+  const pts = [p]; let cur = p.slice(); let d = dir.clone();
+  for (let i = 0; i < 4; i++) {
+    d.add(new THREE.Vector3(rr(-0.22, 0.22), rr(-0.1, 0.14) + (depth < 2 ? -0.05 : 0.04), rr(-0.22, 0.22))).normalize();
+    cur = [cur[0] + d.x * len / 4, cur[1] + d.y * len / 4, cur[2] + d.z * len / 4]; pts.push(cur);
+  }
+  tubeSeg(pts, rad, rad * 0.62, ti);
+  if (depth <= 1) {
+    const nl = depth === 0 ? 9 : 4;
+    for (let k = 0; k < nl; k++) {
+      const q = pts[Math.floor(rr(2, 4.99))];
+      const off = new THREE.Vector3(rr(-1, 1), rr(-0.35, 0.8), rr(-1, 1)).normalize().multiplyScalar(rr(0.05, 0.32) * tree.spread);
+      leafI.push([q[0] + off.x, q[1] + off.y, q[2] + off.z, rr(0.17, 0.27), rr(0, TAU), rr(0.1, 1.4), tree.autumn + rr(-0.25, 0.25), ti]);
+    }
+  }
+  if (depth === 0) return;
+  const n = depth >= 3 ? 4 : rnd() < 0.5 ? 2 : 3;
+  for (let k = 0; k < n; k++) {
+    const nd = d.clone();
+    const axis = new THREE.Vector3(rr(-1, 1), rr(-0.2, 0.2), rr(-1, 1)).normalize();
+    nd.applyAxisAngle(axis, rr(0.35, 0.8) * (depth >= 3 ? 1.1 : 1));
+    if (depth >= 3) { nd.y = Math.max(nd.y, 0.35); nd.normalize(); }
+    growBranch(cur, nd, len * rr(0.62, 0.78), rad * 0.62, depth - 1, tree, ti);
+  }
+}
+TREE_DEF.forEach((t, ti) => {
+  const y0 = terrainH(t.x, t.z) - 0.05;
+  const dir = new THREE.Vector3(t.lean[0], 1, t.lean[1]).normalize();
+  growBranch([t.x, y0, t.z], dir, t.h, 0.075, 4, t, ti);
+});
+const barkGeo = new THREE.BufferGeometry();
+barkGeo.setAttribute('position', new THREE.Float32BufferAttribute(barkG.pos, 3));
+barkGeo.setAttribute('normal', new THREE.Float32BufferAttribute(barkG.nor, 3));
+barkGeo.setAttribute('aSeed', new THREE.Float32BufferAttribute(barkG.seed, 1));
+barkGeo.setIndex(barkG.idx);
+const TREE_SWAY = /* glsl */`
+vec3 sway(vec3 p){
+  float h = max(p.y - 0.6, 0.0);
+  float s = (sin(uTime * 0.9 + p.x * 0.7 + p.z * 0.5) * 0.012 + sin(uTime * 2.1 + p.x * 3.0) * 0.004) * (1.0 + 1.5 * uWindK);
+  return p + vec3(s * h, 0.0, s * 0.6 * h) + vec3(0.86, 0.0, -0.51) * (0.02 * uWindK * h);
+}`;
+const barkMesh = new THREE.Mesh(barkGeo, smat(/* glsl */`
+${GL_COMMON}
+${TREE_SWAY}
+attribute float aSeed;
+varying vec3 vW; varying vec3 vN;
+void main(){ vec3 w = sway((modelMatrix * vec4(position, 1.0)).xyz); vW = w; vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0); }`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vN;
+void main(){
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  vec3 N = normalize(vN);
+  vec3 q = vW * vec3(30.0, 6.0, 30.0);
+  vec3 base = mix(vec3(0.07, 0.06, 0.05), vec3(0.17, 0.15, 0.13), vnoise3(q));
+  base = mix(base, vec3(0.30, 0.31, 0.26), smoothstep(0.65, 0.8, fbm3(vW * 14.0)) * 0.5);
+  base = mix(base, vec3(0.06, 0.12, 0.03), smoothstep(0.3, 0.9, N.y) * smoothstep(0.5, 0.7, fbm3(vW * 8.0)) * 0.7);
+  float ao = mix(0.5, 1.0, smoothstep(0.0, 1.2, vW.y));
+  gl_FragColor = vec4(shadeLand(vW, N, base, 0.8, ao, 0.75, 0.02), 1.0);
+}`));
+barkMesh.frustumCulled = false;
+onLayers(barkMesh, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(barkMesh);
+// canopy centres for volumetric lighting
+const canopy = TREE_DEF.map(() => ({ c: [0, 0, 0], n: 0, r: 0 }));
+for (const l of leafI) { const c = canopy[l[7]]; c.c[0] += l[0]; c.c[1] += l[1]; c.c[2] += l[2]; c.n++; }
+for (const c of canopy) { c.c = c.c.map(v => v / Math.max(c.n, 1)); }
+for (const l of leafI) { const c = canopy[l[7]]; c.r = Math.max(c.r, Math.hypot(l[0] - c.c[0], l[1] - c.c[1], l[2] - c.c[2])); }
+const NLEAF = leafI.length;
+const leafA = new Float32Array(NLEAF * 4), leafB = new Float32Array(NLEAF * 4), leafC = new Float32Array(NLEAF * 4);
+leafI.forEach((l, i) => { const c = canopy[l[7]]; leafA.set([l[0], l[1], l[2], l[3]], i * 4); leafB.set([l[4], l[5], l[6], i * 0.61803], i * 4); leafC.set([c.c[0], c.c[1], c.c[2], c.r], i * 4); });
+const leafGeo = new THREE.InstancedBufferGeometry();
+leafGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+leafGeo.setIndex([0, 1, 2, 0, 2, 3]);
+leafGeo.setAttribute('iA', new THREE.InstancedBufferAttribute(leafA, 4));
+leafGeo.setAttribute('iB', new THREE.InstancedBufferAttribute(leafB, 4));
+leafGeo.setAttribute('iC', new THREE.InstancedBufferAttribute(leafC, 4));
+leafGeo.instanceCount = NLEAF;
+const leafMesh = new THREE.Mesh(leafGeo, smat(/* glsl */`
+${GL_COMMON}
+${TREE_SWAY}
+attribute vec4 iA; attribute vec4 iB; attribute vec4 iC;
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying vec4 vB; varying vec4 vC;
+void main(){
+  float yaw = iB.x, tilt = iB.y;
+  vec3 X = vec3(cos(yaw), 0.0, sin(yaw));
+  vec3 Y0 = vec3(0.0, 1.0, 0.0);
+  vec3 Zn = vec3(-sin(yaw), 0.0, cos(yaw));
+  vec3 Y = normalize(Y0 * cos(tilt) + Zn * sin(tilt));
+  vec3 Nq = normalize(cross(X, Y));
+  vec3 w = iA.xyz + (X * position.x + Y * position.y) * iA.w;
+  w = sway(w);
+  vW = w; vQ = position.xy; vB = iB; vC = iC;
+  vN = Nq;
+  gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying vec4 vB; varying vec4 vC;
+vec3 leafColor(float t){
+  t = sat(t);
+  vec3 g = vec3(0.10, 0.24, 0.04), y = vec3(0.36, 0.36, 0.05), o = vec3(0.62, 0.24, 0.03), r = vec3(0.52, 0.05, 0.03);
+  return t < 0.4 ? mix(g, y, t / 0.4) : t < 0.7 ? mix(y, o, (t - 0.4) / 0.3) : mix(o, r, (t - 0.7) / 0.3);
+}
+void main(){
+  float seed = vB.w;
+  if (uPass > 0.5) {
+    // shadow / reflection: dappled blob instead of individual leaves
+    float r = length(vQ);
+    float n = vnoise(vQ * 4.0 + seed * 17.0);
+    if (r > 0.62 + 0.35 * n || n < 0.22) discard;
+    if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+    vec3 base = leafColor(vB.z + (n - 0.5) * 0.3);
+    float depthIn = dot(vW - vC.xyz, uSunDir) / max(vC.w, 0.1);
+    float lit = mix(0.3, 1.0, smoothstep(-0.9, 0.4, depthIn));
+    vec3 col = base * (uSunCol * lit * 0.8 + mix(uSkyHor, uSkyTop, 0.5) * 0.45);
+    gl_FragColor = vec4(fogLand(col, vW), 1.0);
+    return;
+  }
+  float hitT = -1.0; vec2 hitL = vec2(0.0); float lid = 0.0;
+  for (int i = 0; i < 7; i++){
+    float fi = float(i);
+    vec2 c = (vec2(hash11(seed * 13.0 + fi * 1.7), hash11(seed * 7.0 + fi * 3.1)) * 2.0 - 1.0) * 0.55;
+    float ang = hash11(seed * 3.0 + fi * 5.3) * 6.2832;
+    float sz = 0.36 + 0.14 * hash11(seed * 11.0 + fi);
+    vec2 l = vQ - c; l = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * l / sz;
+    float r = length(l); float a = atan(l.x, l.y);
+    if (r > 1.05) continue;
+    float lobes = 0.0;
+    for (int k = 0; k < 7; k++){
+      float ak = (float(k) - 3.0) * 0.72;
+      float d = abs(a - ak);
+      float Lk = 1.0 - 0.13 * abs(float(k) - 3.0);
+      lobes = max(lobes, Lk * pow(sat(1.0 - d / 0.36), 0.75));
+    }
+    float R = max(0.27, lobes) * (1.0 - 0.05 * abs(sin(a * 34.0)));
+    bool stem = abs(l.x) < 0.035 && l.y < 0.0 && l.y > -0.55;
+    if (r < R || stem) { hitT = fi; hitL = l; lid = hash11(seed * 17.0 + fi * 2.3); break; }
+  }
+  if (hitT < 0.0) discard;
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  float camD = length(vW - cameraPosition);
+  if (camD < 1.6 && hash12(gl_FragCoord.xy) > smoothstep(0.7, 1.6, camD)) discard;
+  vec3 base = leafColor(vB.z + (lid - 0.5) * 0.35);
+  float vein = 0.0;
+  { float a = atan(hitL.x, hitL.y); for (int k = 0; k < 7; k++) vein = max(vein, smoothstep(0.05, 0.0, abs(a - (float(k) - 3.0) * 0.72)) * smoothstep(0.05, 0.3, length(hitL))); }
+  base *= 1.0 + 0.25 * vein;
+  vec3 N = normalize(vN);
+  vec3 V = normalize(cameraPosition - vW);
+  if (dot(N, V) < 0.0) N = -N;
+  vec3 radial = normalize(vW - vC.xyz + vec3(0.0, 0.2, 0.0));
+  vec3 Nl = normalize(mix(N, radial, 0.6));
+  float depthIn = dot(vW - vC.xyz, uSunDir) / max(vC.w, 0.1);
+  float selfSh = mix(0.25, 1.0, smoothstep(-0.9, 0.4, depthIn)) * (0.6 + 0.4 * hash11(seed * 29.0));
+  
+  float inner = smoothstep(0.2, 1.0, length(vW - vC.xyz) / max(vC.w, 0.1));
+  float ndl = sat(dot(Nl, uSunDir) * 0.6 + 0.4);
+  float trans = pow(sat(dot(-V, uSunDir)), 3.0) * 1.4;
+  vec3 skyAmb = mix(uSkyHor, uSkyTop, 0.5 + 0.5 * Nl.y) * 0.5;
+  vec3 col = base * (uSunCol * (ndl + trans) * selfSh + skyAmb * (0.45 + 0.55 * inner));
+  vec3 H = normalize(uSunDir + V);
+  col += uSunCol * ggx(max(dot(N, H), 0.0), 0.35) * 0.02 * selfSh;
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide }));
+leafMesh.frustumCulled = false;
+onLayers(leafMesh, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(leafMesh);
+
+// ---------------------------------------------------------------- falling maple leaves (散り紅葉)
+// single palmate leaves shed from the canopies: they flutter down, ride the water, get nosed by koi,
+// soak, sink, and lie on the bottom for a while; afloat they sample the live water surface so ripples rock them
+const treeLeaves = TREE_DEF.map(() => []);
+leafI.forEach((l, i) => treeLeaves[l[7]].push(i));
+const MAXFALL = 280;
+const fallA = new THREE.InstancedBufferAttribute(new Float32Array(MAXFALL * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const fallB = new THREE.InstancedBufferAttribute(new Float32Array(MAXFALL * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const fallC = new THREE.InstancedBufferAttribute(new Float32Array(MAXFALL * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const fallGeo = new THREE.InstancedBufferGeometry();
+{
+  const pos = [], idx = [], n = 5;
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) pos.push(i / (n - 1) * 2 - 1, j / (n - 1) * 2 - 1, 0);
+  for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) { const a = j * n + i; idx.push(a, a + 1, a + n, a + 1, a + n + 1, a + n); }
+  fallGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); fallGeo.setIndex(idx);
+  fallGeo.setAttribute('iA', fallA); fallGeo.setAttribute('iB', fallB); fallGeo.setAttribute('iC', fallC);
+  fallGeo.instanceCount = 0;
+}
+const fallMesh = new THREE.Mesh(fallGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform sampler2D uSurf;
+attribute vec4 iA; attribute vec4 iB; attribute vec4 iC;   // pos+size | tilt x, tilt z, yaw, colour | afloat, wet, fade, seed
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying vec4 vC; varying float vCol;
+void main(){
+  vec3 P = iA.xyz;
+  vec3 Nn = normalize(vec3(iB.x, 1.0, iB.y));
+  if (iC.x > 0.5) {
+    vec4 sf = textureLod(uSurf, domUV(P.xz), 0.0);
+    P.y = sf.x + 0.0010;
+    Nn = normalize(vec3(iB.x - sf.y * 0.8, 1.0, iB.y - sf.z * 0.8));
+  }
+  vec3 Xh = vec3(cos(iB.z), 0.0, sin(iB.z));
+  vec3 X = normalize(Xh - Nn * dot(Xh, Nn)), Y = cross(Nn, X);
+  vec2 q = position.xy;
+  float cup = 0.14 * (1.0 - 0.7 * iC.y) * dot(q, q);        // a dry leaf curls up at the edges, a soaked one lies flat
+  vec3 w = P + (X * q.x + Y * q.y + Nn * cup) * iA.w;
+  vW = w; vN = Nn; vQ = q; vC = iC; vCol = iB.w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(IS_REFR ? apparentPos(w) : w, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+${GL_UNDER}
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying vec4 vC; varying float vCol;
+vec3 leafColor(float t){
+  t = sat(t);
+  vec3 g = vec3(0.10, 0.24, 0.04), y = vec3(0.36, 0.36, 0.05), o = vec3(0.62, 0.24, 0.03), r = vec3(0.52, 0.05, 0.03);
+  return t < 0.4 ? mix(g, y, t / 0.4) : t < 0.7 ? mix(y, o, (t - 0.4) / 0.3) : mix(o, r, (t - 0.7) / 0.3);
+}
+void main(){
+  bool afloat = vC.x > 0.5;
+  if (IS_SHADOW) discard;
+  if (IS_REFR) { if (afloat || vW.y > 0.003) discard; }
+  else { if (vW.y < -0.004 || (uPass > 0.5 && afloat)) discard; }
+  float kind = floor(vC.w), seed = fract(vC.w);
+  vec2 l = vQ; float r = length(l), a = atan(l.x, l.y);
+  vec3 alb; float thin = 1.0;
+  if (kind < 0.5) {
+    // seven-lobed Japanese maple leaf with a fine saw edge and a short stalk
+    float lobes = 0.0, vein = 0.0;
+    for (int k = 0; k < 7; k++){
+      float ak = (float(k) - 3.0) * 0.74, d = abs(a - ak);
+      lobes = max(lobes, (1.0 - 0.14 * abs(float(k) - 3.0)) * pow(sat(1.0 - d / 0.44), 0.55));
+      vein = max(vein, smoothstep(0.05, 0.0, d) * smoothstep(0.04, 0.25, r));
+    }
+    float R = max(0.40, lobes) * (1.0 - 0.06 * abs(sin(a * 30.0)));
+    bool stalk = abs(l.x) < 0.03 && l.y < 0.0 && l.y > -0.62;
+    if (r > R && !stalk) discard;
+    alb = leafColor(vCol + (vnoise(l * 3.0 + seed * 9.0) - 0.5) * 0.16) * (0.9 + 0.2 * vnoise(l * 7.0 + seed * 5.0)) * (1.0 + 0.25 * vein);
+    if (stalk && r > R * 0.9) alb = vec3(0.30, 0.11, 0.04);
+  } else if (kind > 1.5) {
+    // sasanqua petal: broad, rounded and a little notched at the tip, pink fading to a pale heart at its base
+    float y = l.y;
+    float w = 0.78 * sqrt(max(1.0 - pow((y - 0.12) / 1.02, 2.0), 0.0)) * (0.55 + 0.45 * sat((y + 1.0) * 0.5));
+    if (abs(l.x) > w) discard;
+    if (y > 0.82 && abs(l.x) < 0.14 * (y - 0.82) / 0.18) discard;
+    vec3 edge = vCol > 0.5 ? vec3(0.88, 0.50, 0.50) : vec3(0.80, 0.18, 0.20), heart = vCol > 0.5 ? vec3(0.90, 0.88, 0.84) : vec3(0.90, 0.62, 0.58);
+    alb = mix(heart, edge, smoothstep(-0.7, 0.4, y)) * (0.93 + 0.09 * cos(l.x * 18.0 + y * 6.0));
+    thin = 1.6;
+  } else {
+    // samara: a hard seed at the hub, a thin veined wing swept out to one side
+    float nut = length((l - vec2(0.0, 0.02)) / vec2(0.17, 0.21));
+    float y = l.y;
+    float w = 0.34 * pow(sat(sin(3.1416 * sat(y / 0.98))), 0.55) * (1.0 - 0.25 * y);
+    bool wing = y > 0.05 && y < 0.98 && l.x > -0.07 && l.x < w;
+    if (nut > 1.0 && !wing) discard;
+    float vn = 0.5 + 0.5 * cos((atan(l.x + 0.1, y + 0.05)) * 70.0);
+    vec3 wc = mix(vec3(0.62, 0.16, 0.07), vec3(0.62, 0.44, 0.22), vCol);
+    alb = nut < 1.0 ? mix(vec3(0.30, 0.13, 0.06), vec3(0.42, 0.26, 0.12), vCol) : wc * (0.88 + 0.12 * vn) * (1.0 - 0.25 * smoothstep(0.0, -0.07, l.x - 0.0));
+    thin = nut < 1.0 ? 0.2 : 1.4;
+  }
+  if (hash12(gl_FragCoord.xy + seed * 37.0) > vC.z) discard;      // fading away
+  float wet = vC.y;
+  alb = mix(alb, alb * vec3(0.55, 0.45, 0.40) + vec3(0.03, 0.02, 0.0), wet);   // soaking darkens and browns it
+  vec3 N = normalize(vN), V = normalize(cameraPosition - vW);
+  if (dot(N, V) < 0.0) N = -N;
+  if (IS_REFR) {
+    vec3 sp; vec3 Lt = underLight(vW, N, 1.0, -1, sp);
+    gl_FragColor = vec4(viewThroughWater(alb * Lt, vW), 1.0);
+    return;
+  }
+  float sh = sunShadow(vW, N);
+  float ndl = dot(N, uSunDir);
+  float trans = (afloat ? 0.1 : 1.0) * thin * (pow(sat(dot(-V, uSunDir)), 2.0) * 0.8 + sat(-ndl) * 0.4);   // thin leaf glows with the sun behind it
+  vec3 col = alb * (uSunCol * (sat(ndl) + trans) * sh + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.5);
+  vec3 H = normalize(uSunDir + V);
+  col += uSunCol * ggx(max(dot(N, H), 0.0), afloat ? mix(0.22, 0.10, wet) : 0.45) * (afloat ? 0.07 : 0.02) * sh * sat(ndl);
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
+fallMesh.frustumCulled = false;
+onLayers(fallMesh, LAYER.MAIN, LAYER.REFL, LAYER.REFR); scene.add(fallMesh);
+const fallen = [];
+
+// ---------------------------------------------------------------- water surface
+let mainRT, refrRT, reflRT, dofRT;
+const waterMat = smat(/* glsl */`
+${GL_COMMON}
+uniform sampler2D uSurf; uniform vec4 uGw[4];
+varying vec3 vW; varying vec2 vUv2;
+void main(){
+  vec3 p = (modelMatrix * vec4(position, 1.0)).xyz;
+  vec2 uv = domUV(p.xz);
+  float h = textureLod(uSurf, uv, 0.0).r;
+  vec2 dsp = vec2(0.0);
+  for (int i = 0; i < 4; i++){
+    vec4 g = uGw[i]; float k = 2.0 * PI / g.z; float w = sqrt(9.81 * k);
+    float ph = k * dot(g.xy, p.xz) - w * uTime + float(i) * 1.7;
+    dsp += 0.7 * g.w * g.xy * cos(ph);
+  }
+  p.xz += dsp; p.y = h;
+  vW = p; vUv2 = uv;
+  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+${GL_STRIDER}
+uniform sampler2D uSurf; uniform sampler2D uReflTex; uniform sampler2D uRefrTex; uniform sampler2D uRefrDepth; uniform sampler2D uFloorTex;
+uniform mat4 uReflMat; uniform vec2 uRes; uniform float uNear; uniform float uFar; uniform vec2 uWind; uniform float uRipAmp; uniform vec3 uCamFwd;
+uniform float uChroma; uniform mat4 uProjM;
+varying vec3 vW; varying vec2 vUv2;
+float linDepth(float z){ float ndc = z * 2.0 - 1.0; return (2.0 * uNear * uFar) / (uFar + uNear - ndc * (uFar - uNear)); }
+vec2 fineRipples(vec2 p, float t){
+  vec2 g = vec2(0.0); float amp = 0.00035 * uRipAmp; float lam = 0.026; mat2 M = mat2(0.6, 0.8, -0.8, 0.6);
+  for (int i = 0; i < 2; i++){
+    float f = 1.5 / lam; float kk = 2.0 * PI / lam; float c = sqrt(9.81 / kk + 0.0728 * kk / 1000.0);
+    vec3 n = noised(M * p * f - (M * uWind) * (c * t * f) + float(i) * 11.3);
+    g += amp * f * (transpose(M) * n.yz);
+    lam *= 0.5; amp *= 0.5; M = mat2(0.8, -0.6, 0.6, 0.8) * M;
+  }
+  return g;
+}
+vec2 refrUV(vec3 T, float Lw){
+  vec3 X = vW + T * Lw;
+  vec4 cp = uProjM * viewMatrix * vec4(apparentPos(X), 1.0);
+  return cp.xy / cp.w * 0.5 + 0.5;
+}
+void main(){
+  float sdf = texture(uFloorTex, vUv2).g;
+  if (sdf > 0.05) discard;
+  vec4 s = texture(uSurf, vUv2);
+  vec3 V = cameraPosition - vW; float dist = length(V); V /= dist;
+  float fade = 1.0 - smoothstep(1.5, 6.0, dist);
+  vec2 grad = s.yz + fineRipples(vW.xz, uTime) * fade + striderDimples(vW.xz);
+  vec3 N = normalize(vec3(-grad.x, 1.0, -grad.y));
+  float NdV = max(dot(N, V), 0.0);
+  float F = schlick(NdV);
+  // reflection: project reflected ray end point into the mirror camera
+  vec3 Rr = reflect(-V, N);
+  Rr.y = max(Rr.y, 0.02);
+  vec4 rc = uReflMat * vec4(vW + Rr * 2.5, 1.0);
+  vec3 refl = texture(uReflTex, rc.xy / rc.w).rgb;
+  // refraction
+  vec2 suv = gl_FragCoord.xy / uRes;
+  float rayCos = max(dot(-V, uCamFwd), 0.2);
+  float dScene = linDepth(texture(uRefrDepth, suv).r);
+  float dSurf = linDepth(gl_FragCoord.z);
+  float Lw = clamp((dScene - dSurf) / rayCos, 0.0, 3.0);
+  // if the bent ray lands on something shallower (a swimming frog's leg, a stem) shorten it to that depth,
+  // so deep pixels next to a shallow object don't smear its colour into rainbow fringes
+  float dHit = linDepth(texture(uRefrDepth, refrUV(refract(-V, N, 1.0 / IOR), Lw)).r);
+  Lw = min(Lw, clamp((dHit - dSurf) / rayCos, 0.0, 3.0));
+  vec3 refr;
+  if (uChroma > 0.5) {
+    refr.r = texture(uRefrTex, refrUV(refract(-V, N, 1.0 / 1.329), Lw)).r;
+    refr.g = texture(uRefrTex, refrUV(refract(-V, N, 1.0 / 1.333), Lw)).g;
+    refr.b = texture(uRefrTex, refrUV(refract(-V, N, 1.0 / 1.340), Lw)).b;
+  } else {
+    refr = texture(uRefrTex, refrUV(refract(-V, N, 1.0 / IOR), Lw)).rgb;
+  }
+  // sun glint
+  vec3 H = normalize(V + uSunDir);
+  float spec = ggx(max(dot(N, H), 0.0), 0.045) * schlick(max(dot(V, H), 0.0)) / (4.0 * max(NdV, 0.08));
+  vec3 glint = uSunCol * spec * sat(dot(N, uSunDir) * 4.0) * sunShadow(vW, vec3(0.0, 1.0, 0.0));
+  vec3 col = mix(refr, refl, F) + min(glint, vec3(60.0));
+  // make ripple rings readable even from far away: light catches the steep flanks of the sim waves
+  float ringI = smoothstep(0.013, 0.09, s.a);
+  col += (uSkyHor * 0.55 + uSunCol * 0.18) * ringI * 0.6 * (0.5 + 0.5 * sat(dot(N, uSunDir)));
+  float edge = smoothstep(0.05, 0.0, sdf);
+  gl_FragColor = vec4(col, 1.0) * edge + vec4(refr, 1.0) * (1.0 - edge);
+}`, {
+  uReflTex: { value: null }, uRefrTex: { value: null }, uRefrDepth: { value: null }, uReflMat: { value: reflMatrix },
+  uRes: { value: new THREE.Vector2(1, 1) }, uNear: { value: camera.near }, uFar: { value: camera.far }, uCamFwd: { value: V3(0, 0, -1) },
+  uChroma: { value: Q.chroma ? 1 : 0 }, uProjM: { value: new THREE.Matrix4() },
+});
+const WSEG = TIER === 'low' ? 0.045 : 0.03;
+const waterGeo = new THREE.PlaneGeometry(DOMAIN.w, DOMAIN.h, Math.round(DOMAIN.w / WSEG), Math.round(DOMAIN.h / WSEG));
+waterGeo.rotateX(-Math.PI / 2);
+const water = new THREE.Mesh(waterGeo, waterMat);
+water.position.set(DOMAIN.x + DOMAIN.w / 2, 0, DOMAIN.z + DOMAIN.h / 2);
+water.frustumCulled = false;
+onLayers(water, LAYER.MAIN); scene.add(water);
+water.onBeforeRender = (r, sc, cam) => { waterMat.uniforms.uProjM.value.copy(cam.projectionMatrix); };
+
+// ================================================================= lily pads
+const PAD_COLONIES = [
+  { x: -2.20, z: 0.60, n: 8, spread: 0.55 }, { x: -1.55, z: -0.90, n: 5, spread: 0.42 }, { x: -2.95, z: 0.05, n: 3, spread: 0.28 },
+  { x: -0.55, z: -0.55, n: 5, spread: 0.42 }, { x: 0.35, z: 0.55, n: 4, spread: 0.32 }, { x: 1.30, z: -0.60, n: 7, spread: 0.50 },
+  { x: 2.40, z: 0.95, n: 7, spread: 0.50 }, { x: 3.50, z: -0.30, n: 7, spread: 0.50 }, { x: 2.20, z: -1.55, n: 5, spread: 0.38 },
+  { x: 4.30, z: 0.95, n: 4, spread: 0.32 }, { x: 3.10, z: 1.75, n: 4, spread: 0.30 }, { x: 0.9, z: 1.35, n: 3, spread: 0.26 },
+];
+const pads = [];
+for (const col of PAD_COLONIES) {
+  for (let k = 0; k < col.n; k++) {
+    for (let tries = 0; tries < 30; tries++) {
+      const r = rr(0.085, 0.165);
+      const a = rr(0, TAU), d = Math.sqrt(rnd()) * col.spread;
+      const x = col.x + Math.cos(a) * d, z = col.z + Math.sin(a) * d;
+      if (pondSDF(x, z) > -r * 1.4) continue;
+      let ok = true;
+      for (const p of pads) if (Math.hypot(p.x - x, p.z - z) < (p.r + r) * 0.82) { ok = false; break; }
+      if (!ok) continue;
+      pads.push({ x, z, vx: 0, vz: 0, rot: rr(0, TAU), vr: 0, r, ax: x + rr(-0.08, 0.08), az: z + rr(-0.08, 0.08), tether: rr(0.08, 0.2),
+        seed: rnd(), curl: rnd() < 0.3 ? rr(0.4, 1.0) : rr(0, 0.25), age: Math.pow(rnd(), 2.4), bob: 0, vb: 0, layer: pads.length % 5, weight: 1, kind: 0 });
+      break;
+    }
+  }
+}
+const NPAD = pads.length;
+function padGeometry() {
+  const rings = 16, segs = 80;
+  const pos = [], aux = [], idx = [];
+  pos.push(0, 0, 0); aux.push(0, 0);
+  for (let i = 1; i <= rings; i++) {
+    const r = Math.pow(i / rings, 0.9);
+    const half = 0.035 + 0.11 * r;
+    for (let j = 0; j <= segs; j++) {
+      const a = half + (TAU - 2 * half) * (j / segs);
+      pos.push(Math.cos(a) * r, 0, Math.sin(a) * r); aux.push(r, a);
+    }
+  }
+  const row = segs + 1;
+  for (let j = 0; j < segs; j++) idx.push(0, 1 + j + 1, 1 + j);
+  for (let i = 1; i < rings; i++) for (let j = 0; j < segs; j++) {
+    const a = 1 + (i - 1) * row + j, b = a + 1, c = a + row, d = c + 1;
+    idx.push(a, b, c, b, d, c);
+  }
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aAux', new THREE.Float32BufferAttribute(aux, 2));
+  g.setIndex(idx);
+  return g;
+}
+const NMASK = NPAD + 16;
+const padIPos = new THREE.InstancedBufferAttribute(new Float32Array(NMASK * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const padIData = new THREE.InstancedBufferAttribute(new Float32Array(NMASK * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const padIData2 = new THREE.InstancedBufferAttribute(new Float32Array(NMASK * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const padGeo = padGeometry();
+padGeo.setAttribute('iPos', padIPos); padGeo.setAttribute('iData', padIData); padGeo.setAttribute('iData2', padIData2);
+padGeo.instanceCount = NPAD;
+const padMaskGeo = padGeometry();
+padMaskGeo.setAttribute('iPos', padIPos); padMaskGeo.setAttribute('iData', padIData); padMaskGeo.setAttribute('iData2', padIData2);
+padMaskGeo.instanceCount = NPAD;
+const PAD_VS_COMMON = /* glsl */`
+attribute vec2 aAux; attribute vec4 iPos; attribute vec4 iData; attribute vec4 iData2;
+uniform sampler2D uSurf; uniform vec4 uFrogA[5]; uniform vec4 uFrogB[5];
+vec3 padWorld(out vec2 local, out vec3 nrm){
+  float R = iData.x; float c = cos(iPos.z), s = sin(iPos.z);
+  vec2 lp = position.xz;
+  local = lp;
+  float r = aAux.x; float a = aAux.y;
+  float wave = 0.0025 * sin(a * 7.0 + iData.z * 30.0) * r * r * r;
+  float curl = iData.w * pow(r, 5.0) * 0.022 * (R / 0.14);
+  float dome = 0.002 * (1.0 - r * r);
+  // notch lobes lift slightly
+  float lobe = 0.0025 * smoothstep(0.6, 0.0, min(a, 2.0 * PI - a)) * r;
+  vec2 wp = iPos.xy + vec2(c * lp.x * R - s * lp.y * R, s * lp.x * R + c * lp.y * R);
+  vec4 sf = textureLod(uSurf, domUV(wp), 0.0);
+  float wgt = iData2.x;
+  float y = sf.x * mix(0.85, 1.0, wgt) + 0.0038 + iPos.w + wave + curl + dome + lobe;
+  // the leaf settles under each frog's feet
+  for (int i = 0; i < 5; i++){
+    vec4 fa = uFrogA[i];
+    if (fa.w > -0.5 && abs(fa.w - iData2.y) < 0.5) {
+      float fr = uFrogB[i].x;
+      vec2 dd = wp - fa.xz; float fd2 = dot(dd, dd);
+      float infl = exp(-fd2 / (fr * fr * 3.0));
+      float dimple = 0.05 * fr * exp(-fd2 / (fr * fr * 0.9));
+      y = mix(y, fa.y + 0.0002, infl * 0.85) - dimple * infl;
+    }
+  }
+  float dr = 5.0 * iData.w * pow(r, 4.0) * 0.022 * (R / 0.14) / R;
+  vec2 radial = vec2(c * lp.x - s * lp.y, s * lp.x + c * lp.y) / max(r, 1e-3);
+  vec2 g = sf.yz * mix(0.85, 1.0, wgt) + radial * dr;
+  nrm = normalize(vec3(-g.x, 1.0, -g.y));
+  return vec3(wp.x, y, wp.y);
+}`;
+const padMat = smat(/* glsl */`
+${GL_COMMON}
+${PAD_VS_COMMON}
+varying vec3 vW; varying vec3 vN; varying vec2 vLocal; varying vec4 vData; varying vec4 vData2; varying vec2 vAux; varying vec2 vCS;
+void main(){
+  vec2 local; vec3 n;
+  vec3 w = padWorld(local, n);
+  vW = w; vN = n; vLocal = local; vData = iData; vData2 = iData2; vAux = aAux; vCS = vec2(cos(iPos.z), sin(iPos.z));
+  gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+uniform vec4 uFrogA[5]; uniform vec4 uFrogB[5]; uniform vec4 uFrogC[5];
+varying vec3 vW; varying vec3 vN; varying vec2 vLocal; varying vec4 vData; varying vec4 vData2; varying vec2 vAux; varying vec2 vCS;
+void main(){
+  float r = vAux.x; float ang = vAux.y;
+  float seed = vData.z; float age = vData2.z;
+  float R = vData.x;
+  vec2 lm = vLocal * R;   // position in the leaf's own frame (metres): surface detail rides along as the leaf drifts and turns
+  // insect holes & ragged edges on old leaves
+  float hole = fbm(vLocal * 9.0 + seed * 50.0);
+  if (age > 0.7 && hole > 0.78 - 0.1 * (age - 0.7)) discard;
+  float rag = vnoise(vec2(ang * 18.0, seed * 9.0));
+  if (r > 0.985 - 0.03 * rag * age) discard;
+  vec3 N = normalize(vN);
+  if (!gl_FrontFacing) N = -N;
+  // colours
+  float n1 = fbm(vLocal * 2.5 + seed * 20.0);
+  vec3 green = mix(vec3(0.032, 0.115, 0.02), vec3(0.095, 0.21, 0.035), n1);
+  green = mix(green, vec3(0.15, 0.22, 0.03), smoothstep(0.6, 0.85, fbm(vLocal * 6.0 - seed * 5.0)) * 0.55);
+  green *= mix(0.85, 1.08, smoothstep(0.0, 0.7, r));
+  vec3 young = mix(vec3(0.15, 0.04, 0.03), vec3(0.11, 0.09, 0.03), n1);
+  float yk = smoothstep(0.90, 1.0, seed) * 0.75;
+  vec3 col = mix(green, young, yk);
+  // ageing: yellow & brown blotches
+  float blot = smoothstep(0.5, 0.72, fbm(vLocal * 4.0 - seed * 33.0) + 0.25 * r) * smoothstep(0.55, 1.0, age);
+  col = mix(col, mix(vec3(0.42, 0.34, 0.08), vec3(0.30, 0.16, 0.05), smoothstep(0.6, 0.9, fbm(vLocal * 9.0 + seed))), blot * 0.8);
+  col = mix(col, vec3(0.22, 0.12, 0.05), smoothstep(0.82, 0.95, fbm(vLocal * 7.0 + seed)) * age * 0.8);
+  // veins: primary radial + forks + reticulation
+  float a01 = ang / (2.0 * PI);
+  float nv = 21.0 + floor(seed * 4.0);
+  float wob = 0.12 * (fbm(vLocal * 3.0 + seed) - 0.5);
+  float f1 = fract(a01 * nv + wob);
+  float dw1 = min(f1, 1.0 - f1) / nv * 2.0 * PI * r * R;
+  float f2 = fract(a01 * nv * 2.0 + 0.5 + wob * 2.0);
+  float dw2 = min(f2, 1.0 - f2) / (nv * 2.0) * 2.0 * PI * r * R;
+  float vein = 1.0 - smoothstep(0.00035, 0.0009, dw1);
+  vein = max(vein, (1.0 - smoothstep(0.00025, 0.0007, dw2)) * smoothstep(0.42, 0.6, r) * 0.8);
+  float ret = 1.0 - smoothstep(0.02, 0.07, abs(vnoise(lm * 150.0 + seed * 9.0) - 0.5));
+  col *= 1.0 + 0.22 * vein - 0.06 * ret;
+  col = mix(col, col * vec3(1.15, 1.2, 0.9), smoothstep(0.08, 0.0, r));
+  // rim
+  col = mix(col, vec3(0.30, 0.10, 0.05), smoothstep(0.93, 0.99, r) * 0.6);
+  float underside = gl_FrontFacing ? 0.0 : 1.0;
+  col = mix(col, vec3(0.32, 0.10, 0.12), underside);
+  // droplets, fixed to the leaf: laid out in its frame, their bulge turned back into world space
+  vec4 dv = voronoiV(lm * 58.0 + seed * 3.0);
+  float dropR = (0.09 + 0.19 * hash11(dv.w * 31.0)) * step(0.68, dv.w);
+  float inDrop = 1.0 - smoothstep(dropR * 0.8, dropR, dv.z);
+  vec3 Nd = N;
+  if (inDrop > 0.0 && dropR > 0.0) {
+    vec2 o = -dv.xy / dropR;
+    vec2 ow = vec2(vCS.x * o.x - vCS.y * o.y, vCS.y * o.x + vCS.x * o.y);
+    float hh = sqrt(max(1.0 - dot(o, o), 0.0));
+    Nd = normalize(vec3(ow.x, hh * 1.6, ow.y));
+    N = normalize(mix(N, Nd, inDrop));
+  }
+  // wet sheen varies
+  float rough = mix(0.34, 0.16, smoothstep(0.4, 0.7, fbm(vLocal * 3.0 - seed * 7.0)));
+  rough = mix(rough, 0.03, inDrop);
+  // lighting
+  vec3 V = normalize(cameraPosition - vW);
+  vec3 L = uSunDir;
+  float ndl = max(dot(N, L), 0.0);
+  // frog shadow & contact occlusion
+  float shadow = 1.0;
+  float aoF = 1.0;
+  for (int i = 0; i < 5; i++){
+    vec4 fa = uFrogA[i]; vec4 fc = uFrogC[i]; float fr = uFrogB[i].x;
+    float hgt = fc.y - vW.y;
+    if (hgt < 0.0 || hgt > 0.3) continue;
+    vec2 proj = fc.xz - uSunDir.xz / max(uSunDir.y, 0.15) * hgt;
+    vec2 fw = vec2(cos(fc.w), sin(fc.w));
+    vec2 rel = vW.xz - proj; rel = vec2(dot(rel, fw), dot(rel, vec2(-fw.y, fw.x)));
+    float soft = 1.0 + max(hgt - fr * 0.5, 0.0) / fr;
+    float sd = length(rel / vec2(1.25, 1.0)) / (fr * 0.85 * soft);
+    shadow *= 1.0 - 0.8 / soft * (1.0 - smoothstep(0.45, 1.2, sd));
+    if (fa.w > -0.5) {
+      vec2 rc = vW.xz - fa.xz; rc = vec2(dot(rc, fw), dot(rc, vec2(-fw.y, fw.x)));
+      float cd = length(rc / vec2(1.3, 1.0)) / fr;
+      aoF *= 1.0 - 0.55 * (1.0 - smoothstep(0.3, 1.25, cd));
+    }
+  }
+  shadow *= sunShadow(vW, N);
+  vec3 skyAmb = mix(uSkyHor, uSkyTop, 0.6 + 0.4 * N.y) * 0.6 * aoF;
+  vec3 H = normalize(L + V);
+  float F = 0.04 + 0.96 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+  float spec = ggx(max(dot(N, H), 0.0), rough) * F / (4.0 * max(dot(N, V), 0.1));
+  vec3 refl = skyColor(reflect(-V, N), 0.0) * (0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0));
+  float trans = underside;
+  vec3 diff = col * (uSunCol * ndl * shadow + skyAmb) + col * col * uSunCol * 0.25 * trans;
+  vec3 outc = diff + uSunCol * spec * ndl * shadow * (1.0 - 0.6 * underside) + refl * 0.65 * aoF;
+  // droplet: dark refractive rim + bright focus spot
+  if (inDrop > 0.0) {
+    vec2 o = -dv.xy / max(dropR, 1e-3);
+    float rim2 = smoothstep(0.55, 0.95, length(o));
+    outc *= 1.0 - 0.35 * rim2 * inDrop;
+    vec2 sunL = vec2(vCS.x * uSunDir.x + vCS.y * uSunDir.z, -vCS.y * uSunDir.x + vCS.x * uSunDir.z);   // sun direction in the leaf frame
+    vec2 sd2 = o + normalize(sunL + 1e-4) * 0.45;
+    outc += uSunCol * 0.35 * col * (1.0 - smoothstep(0.0, 0.35, length(sd2))) * inDrop * shadow;
+  }
+  gl_FragColor = vec4(fogLand(outc, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+const padMesh = new THREE.Mesh(padGeo, padMat);
+padMesh.frustumCulled = false;
+onLayers(padMesh, LAYER.MAIN); scene.add(padMesh);
+const padMaskMat = new THREE.ShaderMaterial({
+  uniforms: Object.assign({}, G),
+  vertexShader: /* glsl */`
+${GL_COMMON}
+${PAD_VS_COMMON}
+void main(){ vec2 l; vec3 n; vec3 w = padWorld(l, n); float R = iData.x;
+  vec2 c = domUV(w.xz); gl_Position = vec4(c * 2.0 - 1.0, 0.0, 1.0); }`,
+  fragmentShader: /* glsl */`void main(){ gl_FragColor = vec4(1.0); }`,
+  depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+});
+const padMaskMesh = new THREE.Mesh(padMaskGeo, padMaskMat);
+padMaskMesh.frustumCulled = false;
+onLayers(padMaskMesh, LAYER.MASK); scene.add(padMaskMesh);
+
+// ---------------------------------------------------------------- stems (underwater)
+const MAXSTEM = NPAD + 40;
+const stemTop = new THREE.InstancedBufferAttribute(new Float32Array(MAXSTEM * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const stemBot = new THREE.InstancedBufferAttribute(new Float32Array(MAXSTEM * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const stemGeo = (() => {
+  const nl = 24, nr = 6; const pos = [], idx = [];
+  for (let i = 0; i <= nl; i++) for (let j = 0; j < nr; j++) pos.push(i / nl, j / nr * TAU, 0);
+  for (let i = 0; i < nl; i++) for (let j = 0; j < nr; j++) {
+    const a = i * nr + j, b = i * nr + (j + 1) % nr, c = a + nr, d = b + nr;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.setAttribute('iTop', stemTop); g.setAttribute('iBot', stemBot);
+  g.instanceCount = 0;
+  return g;
+})();
+const stems = new THREE.Mesh(stemGeo, smat(/* glsl */`
+${GL_COMMON}
+attribute vec4 iTop; attribute vec4 iBot;
+varying vec3 vW; varying vec3 vN; varying float vT;
+void main(){
+  float t = position.x; float a = position.y;
+  vec3 A = iTop.xyz, B = iBot.xyz;
+  float span = length(B.xz - A.xz);
+  vec3 C = mix(A, B, 0.5) + vec3((B.x - A.x) * 0.25, -0.12 - 0.15 * span, (B.z - A.z) * 0.25);
+  vec3 P = mix(mix(A, C, t), mix(C, B, t), t);
+  vec3 T = normalize(mix(C - A, B - C, t) + 1e-5);
+  vec3 U = normalize(cross(T, vec3(0.31, 0.0, 0.95)));
+  vec3 W = cross(T, U);
+  vec3 n = U * cos(a) + W * sin(a);
+  float rad = iTop.w * (1.0 - 0.25 * t);
+  vec3 w = P + n * rad;
+  vW = w; vN = n; vT = t;
+  gl_Position = projectionMatrix * viewMatrix * vec4(apparentPos(w), 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_UNDER}
+varying vec3 vW; varying vec3 vN; varying float vT;
+void main(){
+  if (vW.y > -0.002) discard;
+  vec3 N = normalize(vN);
+  vec3 alb = mix(vec3(0.34, 0.16, 0.08), vec3(0.20, 0.24, 0.08), vT) * (0.8 + 0.3 * vnoise(vec2(vT * 40.0, 0.0)));
+  vec3 sp; vec3 L = underLight(vW, N, 0.9, -1, sp);
+  gl_FragColor = vec4(viewThroughWater(alb * L, vW), 1.0);
+}`));
+stems.frustumCulled = false;
+onLayers(stems, LAYER.REFR); scene.add(stems);
+
+// ---------------------------------------------------------------- submerged eelgrass (セキショウモ)
+// clumps of ribbon leaves rooted in the floor; they sway in the slow current, and each ribbon carries a
+// little spring (CPU) that koi shove aside as they push through — it swings back after they pass
+const weeds = [];
+{
+  const clumps = [];
+  for (let tries = 0; tries < 600 && clumps.length < 17; tries++) {
+    const x = rr(DOMAIN.x + 0.3, DOMAIN.x + DOMAIN.w - 0.3), z = rr(DOMAIN.z + 0.3, DOMAIN.z + DOMAIN.h - 0.3);
+    const sd = pondSDF(x, z);
+    if (sd > -0.28 || sd < -1.3 || terrainH(x, z) > -0.17) continue;
+    if (clumps.some((c) => Math.hypot(c[0] - x, c[1] - z) < 0.75)) continue;
+    clumps.push([x, z]);
+  }
+  for (const [cx, cz] of clumps) {
+    const n = 18 + Math.floor(rnd() * 18), spread = rr(0.12, 0.3);
+    const flow = Math.atan2(G.uWind.value.y, G.uWind.value.x) + rr(-0.6, 0.6);   // a clump leans together, down the current
+    for (let i = 0; i < n; i++) {
+      const a = rr(0, TAU), d = Math.sqrt(rnd()) * spread;
+      const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d, y = terrainH(x, z) - 0.01;
+      if (y > -0.09 || pondSDF(x, z) > -0.15) continue;           // the clump's edge ran up the bank
+      weeds.push({ x, y, z, len: -y * rr(0.5, 1.3), w: rr(0.010, 0.017), az: flow + rr(-0.35, 0.35), lean: rr(0.35, 0.85), seed: rnd(), bx: 0, bz: 0, vx: 0, vz: 0 });
+    }
+  }
+}
+const NWEED = weeds.length;
+const weedC = new THREE.InstancedBufferAttribute(new Float32Array(NWEED * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const weedGeo = new THREE.InstancedBufferGeometry();
+{
+  const pos = [], idx = []; const ns = 12;
+  for (let i = 0; i <= ns; i++) { const v = i / ns; pos.push(-0.5, v, 0, 0.5, v, 0); }
+  for (let i = 0; i < ns; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  weedGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); weedGeo.setIndex(idx);
+  const A = new Float32Array(NWEED * 4), B = new Float32Array(NWEED * 4);
+  weeds.forEach((w, i) => { A.set([w.x, w.y, w.z, w.len], i * 4); B.set([w.w, w.az, w.lean, w.seed], i * 4); });
+  weedGeo.setAttribute('iA', new THREE.InstancedBufferAttribute(A, 4));
+  weedGeo.setAttribute('iB', new THREE.InstancedBufferAttribute(B, 4));
+  weedGeo.setAttribute('iC', weedC);
+  weedGeo.instanceCount = NWEED;
+}
+const weedMesh = new THREE.Mesh(weedGeo, smat(/* glsl */`
+${GL_COMMON}
+attribute vec4 iA; attribute vec4 iB; attribute vec4 iC;   // root+length | width, lean dir, lean, seed | koi push (tip offset)
+varying vec3 vW; varying vec3 vN; varying vec2 vUV; varying float vSeed;
+void main(){
+  float u = position.x, v = position.y;
+  float h = iA.w; vec2 ld = vec2(cos(iB.y), sin(iB.y)); float ph = iB.w * 6.2832;
+  vec2 flow = ld * (iB.z + 0.10 * sin(uTime * 0.55 + ph) + 0.06 * uWindK) + vec2(-ld.y, ld.x) * 0.07 * sin(uTime * 0.83 + ph * 1.7);
+  vec2 off = flow * h * v * v + iC.xy * pow(v, 1.4);
+  float sag = dot(off, off) / max(h, 0.05) * 0.5;               // stays about the same length as it bends
+  vec3 P = vec3(iA.x + off.x, iA.y + h * v - sag, iA.z + off.y);
+  vec3 T = normalize(vec3(2.0 * flow.x * h * v + 1.4 * iC.x * pow(max(v, 1e-3), 0.4), h, 2.0 * flow.y * h * v + 1.4 * iC.y * pow(max(v, 1e-3), 0.4)));
+  // broad face turned up into the light as the ribbon leans with the current, with a slow twist along it
+  float tw = iB.y + 1.5708 + 0.7 * sin(v * 3.0 + ph) + 0.25 * sin(uTime * 0.7 + ph);
+  vec3 side = vec3(cos(tw), 0.0, sin(tw));
+  // a ribbon long enough to reach the top trails flat along the underside of the surface
+  float top = -0.010 - 0.004 * iB.w;
+  if (P.y > top) {
+    vec2 fd = normalize(flow + iC.xy * 2.0 + 1e-4);
+    float ex = P.y - top; P.y = top - ex * 0.04; P.xz += fd * ex;
+    T = vec3(fd.x, 0.0, fd.y); side = vec3(-fd.y, 0.0, fd.x);
+  }
+  side = normalize(side - T * dot(side, T) + 1e-5);
+  float wdt = iB.x * (1.0 - 0.2 * v) * (1.0 - 0.7 * smoothstep(0.9, 1.0, v));
+  P += side * u * wdt;
+  vN = normalize(cross(side, T));
+  vW = P; vUV = vec2(u, v); vSeed = iB.w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(apparentPos(P), 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_UNDER}
+varying vec3 vW; varying vec3 vN; varying vec2 vUV; varying float vSeed;
+void main(){
+  if (vW.y > -0.004) discard;
+  vec3 N = normalize(vN);
+  if (dot(N, cameraPosition - vW) < 0.0) N = -N;
+  float k = hash11(vSeed * 91.0);
+  vec3 alb = mix(vec3(0.07, 0.20, 0.05), vec3(0.15, 0.29, 0.07), k);
+  alb = mix(alb, vec3(0.20, 0.33, 0.09), smoothstep(0.5, 1.0, vUV.y) * 0.5);                            // fresh, paler tips
+  alb *= 0.9 + 0.1 * cos(vUV.x * 6.2832 * 3.0);                                                         // fine parallel veins
+  alb = mix(alb, vec3(0.15, 0.13, 0.07), smoothstep(0.6, 0.85, vnoise(vec2(vUV.y * 18.0, vSeed * 40.0))) * 0.45);   // silt / epiphyte film
+  vec3 sp; vec3 L = underLight(vW, N, mix(0.55, 1.0, vUV.y), -1, sp);
+  L += sp * 0.45;                                                                                        // light through the thin blade
+  gl_FragColor = vec4(viewThroughWater(alb * L, vW - vec3(0.0, 0.03, 0.0)), 1.0);                       // plus a little pond murk
+}`, {}, { side: THREE.DoubleSide }));
+weedMesh.frustumCulled = false;
+onLayers(weedMesh, LAYER.REFR); scene.add(weedMesh);
+
+// ---------------------------------------------------------------- water-lily flowers
+const FLOWER_DEF = [
+  { colony: 0, kind: 'pink', size: 1.35, dx: 0.10, dz: -0.18 },
+  { colony: 5, kind: 'white', size: 1.25, dx: -0.12, dz: 0.16 },
+  { colony: 4, kind: 'rose', size: 1.2, dx: 0.05, dz: 0.12 },
+  { colony: 3, kind: 'bud', size: 1.25, dx: 0.16, dz: 0.05 },
+  { colony: 0, kind: 'bud2', size: 1.1, dx: -0.30, dz: 0.22 },
+  { colony: 6, kind: 'pink', size: 1.3, dx: -0.15, dz: -0.10 },
+  { colony: 7, kind: 'white', size: 1.3, dx: 0.12, dz: 0.14 },
+  { colony: 7, kind: 'rose', size: 1.15, dx: -0.25, dz: -0.18 },
+  { colony: 1, kind: 'white', size: 1.2, dx: 0.10, dz: 0.10 },
+  { colony: 8, kind: 'bud', size: 1.2, dx: 0.08, dz: -0.12 },
+  { colony: 9, kind: 'pink', size: 1.2, dx: 0.0, dz: 0.10 },
+  { colony: 6, kind: 'bud2', size: 1.1, dx: 0.28, dz: 0.20 },
+];
+function buildFlowerGeometry(kind, size) {
+  const pos = [], nor = [], at = [], idx = [], el = [];
+  const bud = kind.startsWith('bud');
+  function petal(len, wid, az, elev, curl, cup, layer, nu = 9, nv = 6) {
+    const base = pos.length / 3;
+    const ca = Math.cos(az), sa = Math.sin(az);
+    // centreline in the radial–vertical plane
+    const cl = [[0, 0]]; let x = 0, y = 0;
+    for (let i = 1; i <= nu; i++) {
+      const u = i / nu; const ang = elev + curl * u * u;
+      x += Math.cos(ang) * len / nu; y += Math.sin(ang) * len / nu; cl.push([x, y]);
+    }
+    for (let i = 0; i <= nu; i++) {
+      const u = i / nu;
+      const w = wid * Math.pow(Math.sin(Math.PI * Math.min(0.06 + u * 0.94, 1)), 0.8) * (1 - 0.25 * u * u) + 0.0015;
+      const [cx, cy] = cl[i];
+      const t0 = cl[Math.max(i - 1, 0)], t1 = cl[Math.min(i + 1, nu)];
+      let tx = t1[0] - t0[0], ty = t1[1] - t0[1]; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
+      const nx = -ty, ny = tx;
+      for (let j = 0; j <= nv; j++) {
+        const v = j / nv * 2 - 1;
+        const off = v * w; const lift = cup * v * v * w;
+        const rx = cx + nx * lift, ry = cy + ny * lift, rz = off;
+        pos.push(ca * rx - sa * rz, ry, sa * rx + ca * rz);
+        const nnx = nx - 2 * cup * v * 0 , nny = ny;
+        const nside = -2 * cup * v;
+        const lnx = nx, lny = ny, lnz = nside;
+        const ll = Math.hypot(lnx, lny, lnz);
+        nor.push((ca * lnx - sa * lnz) / ll, lny / ll, (sa * lnx + ca * lnz) / ll);
+        at.push(u, v, layer, az); el.push(elev);
+      }
+    }
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+      const a = base + i * (nv + 1) + j, b = a + 1, c = a + nv + 1, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const S = size;
+  if (bud) {
+    for (let i = 0; i < 4; i++) petal(0.048 * S, 0.016 * S, i * TAU / 4 + 0.3, 1.32, 0.38, 0.6, 0);
+    for (let i = 0; i < 6; i++) petal(0.046 * S, 0.014 * S, i * TAU / 6 + 0.8, 1.40, 0.30, 0.6, 1);
+  } else {
+    for (let i = 0; i < 4; i++) petal(0.060 * S, 0.020 * S, i * TAU / 4 + 0.4, 0.06, 0.25, 0.25, 0);
+    for (let i = 0; i < 8; i++) petal(0.066 * S, 0.020 * S, i * TAU / 8 + 0.1, 0.22, 0.35, 0.35, 1);
+    for (let i = 0; i < 8; i++) petal(0.060 * S, 0.018 * S, i * TAU / 8 + 0.1 + TAU / 16, 0.55, 0.35, 0.45, 2);
+    for (let i = 0; i < 8; i++) petal(0.050 * S, 0.015 * S, i * TAU / 8 + 0.3, 0.92, 0.25, 0.5, 3);
+    for (let i = 0; i < 6; i++) petal(0.036 * S, 0.011 * S, i * TAU / 6 + 0.6, 1.18, 0.2, 0.5, 3.5);
+    for (let i = 0; i < 44; i++) petal(0.019 * S, 0.0016 * S, i * TAU / 44 + (i % 2) * 0.05, 1.05 + (i % 3) * 0.12, -0.55, 0.0, 5, 4, 1);
+    // stigma disc
+    const base = pos.length / 3; const nd = 18, rd = 0.009 * S;
+    pos.push(0, 0.006 * S, 0); nor.push(0, 1, 0); at.push(0, 0, 6, 0); el.push(0);
+    for (let i = 0; i <= nd; i++) { const a = i / nd * TAU; pos.push(Math.cos(a) * rd, 0.0075 * S, Math.sin(a) * rd); nor.push(0, 1, 0); at.push(1, i / nd, 6, 0); el.push(0); }
+    for (let i = 0; i < nd; i++) idx.push(base, base + 1 + i + 1, base + 1 + i);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('aPet', new THREE.Float32BufferAttribute(at, 4));
+  g.setAttribute('aElev', new THREE.Float32BufferAttribute(el, 1));
+  g.setIndex(idx);
+  return g;
+}
+// water lilies open through the morning, are wide open at midday and fold shut towards evening
+const FLOWER_CLOSE_AT = { morning: 0.35, noon: 0.0, evening: 0.92 };
+const FLOWER_CLOSE = { value: 0 };
+const FLOWER_COL = {
+  pink: [[1.0, 0.88, 0.90], [0.88, 0.33, 0.52]], white: [[0.98, 0.97, 0.90], [0.96, 0.93, 0.86]],
+  rose: [[0.98, 0.70, 0.78], [0.80, 0.18, 0.40]], bud: [[0.95, 0.70, 0.78], [0.86, 0.36, 0.52]], bud2: [[0.97, 0.94, 0.88], [0.96, 0.80, 0.84]],
+};
+const flowerMatFor = (kind) => smat(/* glsl */`
+${GL_COMMON}
+attribute vec4 aPet; attribute float aElev;
+uniform float uClose; uniform float uBud;
+varying vec3 vW; varying vec3 vN; varying vec4 vPet;
+vec3 rotA(vec3 p, vec3 k, float a){ return p * cos(a) + cross(k, p) * sin(a) + k * dot(k, p) * (1.0 - cos(a)); }
+void main(){
+  vec3 p = position, n = normal;
+  if (uBud < 0.5 && uClose > 0.001 && aPet.z < 5.9) {
+    // each petal swings up about the hinge at its base until the flower is a closed cup; the outer whorls close last
+    vec3 k = vec3(-sin(aPet.w), 0.0, cos(aPet.w));
+    float target = aPet.z < 0.5 ? 1.22 : aPet.z < 4.5 ? 1.30 + 0.05 * aPet.z : 1.48;
+    float c = sat(uClose * (1.25 - 0.08 * aPet.z));
+    float ang = (target - aElev) * c * c * (3.0 - 2.0 * c);
+    p = rotA(p, k, ang); n = rotA(n, k, ang);
+  }
+  vec3 w = (modelMatrix * vec4(p, 1.0)).xyz;
+  vW = w; vN = mat3(modelMatrix) * n; vPet = aPet;
+  gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+uniform vec3 uBase; uniform vec3 uTip; uniform float uBud;
+varying vec3 vW; varying vec3 vN; varying vec4 vPet;
+void main(){
+  float u = clamp(vPet.x, 0.0, 1.0), v = vPet.y, layer = vPet.z;
+  vec3 N = normalize(vN + vec3(0.0, 1e-5, 0.0)); if (!gl_FrontFacing) N = -N;
+  vec3 V = normalize(cameraPosition - vW);
+  vec3 col; float rough = 0.55; float trans = 0.6;
+  if (layer > 5.5) {
+    float rr2 = u; float ridge = 0.5 + 0.5 * cos(v * 2.0 * PI * 14.0);
+    col = mix(vec3(0.95, 0.72, 0.12), vec3(0.85, 0.55, 0.08), ridge * rr2);
+    trans = 0.1;
+  } else if (layer > 4.5) {
+    col = mix(vec3(0.95, 0.62, 0.10), vec3(1.0, 0.82, 0.25), u);
+    trans = 0.3;
+  } else if (layer < 0.5) {
+    // sepals: green outside, petal-coloured inside
+    vec3 inside = mix(uBase, uTip, 0.35) * 0.92;
+    vec3 outside = mix(vec3(0.16, 0.26, 0.08), vec3(0.32, 0.14, 0.12), u * 0.6);
+    col = gl_FrontFacing ? inside : outside;
+    if (uBud > 0.5) col = mix(outside, inside, 0.25 * u);
+    trans = 0.35;
+  } else {
+    float g = pow(u, 1.4);
+    col = mix(uBase, uTip, g);
+    col = mix(col, vec3(1.0, 0.92, 0.55), (1.0 - smoothstep(0.0, 0.22, u)) * 0.5);
+    float veins = 0.5 + 0.5 * cos(v * PI * 7.0);
+    col *= 1.0 - 0.06 * veins * (1.0 - u);
+    col *= 0.94 + 0.06 * (layer / 3.5);
+  }
+  float ndl = dot(N, uSunDir);
+  vec3 skyAmb = mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.62;
+  float occ = 0.55 + 0.45 * smoothstep(0.0, 0.8, u) ;
+  if (layer > 4.5) occ = 0.6;
+  vec3 H = normalize(uSunDir + V);
+  float spec = ggx(max(dot(N, H), 0.0), rough) * 0.03;
+  float back = sat(-ndl) * trans;
+  float wrap = sat((ndl + 0.35) / 1.35);
+  float fsh = sunShadow(vW, N);
+  vec3 c = col * (uSunCol * (wrap * 0.9 + back * 0.55) * fsh + skyAmb * occ) + uSunCol * spec * sat(ndl) * fsh;
+  gl_FragColor = vec4(fogLand(c, vW), 1.0);
+}`, { uBase: { value: V3(...FLOWER_COL[kind][0]) }, uTip: { value: V3(...FLOWER_COL[kind][1]) }, uBud: { value: kind.startsWith('bud') ? 1 : 0 }, uClose: FLOWER_CLOSE }, { side: THREE.DoubleSide });
+const flowers = FLOWER_DEF.map((d, i) => {
+  const col = PAD_COLONIES[d.colony];
+  const m = new THREE.Mesh(buildFlowerGeometry(d.kind, d.size), flowerMatFor(d.kind));
+  m.frustumCulled = false;
+  onLayers(m, LAYER.MAIN, LAYER.REFL); scene.add(m);
+  const x = col.x + d.dx, z = col.z + d.dz;
+  return { mesh: m, x, z, ax: x, az: z, vx: 0, vz: 0, rot: rr(0, TAU), kind: d.kind, r: d.kind.startsWith('bud') ? 0.035 : 0.075 * d.size, bob: 0, vb: 0, lift: d.kind.startsWith('bud') ? 0.03 : 0.004 };
+});
+
+// ---------------------------------------------------------------- floating cover in the pad mask
+// duckweed and water-chestnut rosettes also calm the ripples and shade the floor below them, like the lily pads
+const MAXMASK = 6000;
+const maskDiscAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAXMASK * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const maskDiscGeo = new THREE.InstancedBufferGeometry();
+maskDiscGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+maskDiscGeo.setIndex([0, 1, 2, 0, 2, 3]);
+maskDiscGeo.setAttribute('iD', maskDiscAttr); maskDiscGeo.instanceCount = 0;
+const maskDiscMesh = new THREE.Mesh(maskDiscGeo, new THREE.ShaderMaterial({
+  uniforms: Object.assign({}, G),
+  vertexShader: /* glsl */`
+${GL_COMMON}
+attribute vec4 iD; varying vec2 vQ; varying float vS;
+void main(){ vQ = position.xy; vS = iD.w; vec2 w = iD.xy + position.xy * iD.z; gl_Position = vec4(domUV(w) * 2.0 - 1.0, 0.0, 1.0); }`,
+  fragmentShader: /* glsl */`varying vec2 vQ; varying float vS; void main(){ if (dot(vQ, vQ) > 1.0) discard; gl_FragColor = vec4(vS); }`,
+  depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+  blending: THREE.CustomBlending, blendEquation: THREE.MaxEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+}));
+maskDiscMesh.frustumCulled = false;
+onLayers(maskDiscMesh, LAYER.MASK); scene.add(maskDiscMesh);
+
+// ---------------------------------------------------------------- water chestnut (ヒシ)
+// floating rosettes of rhombic, saw-edged leaves on swollen petioles, laid out in a leaf mosaic; red in autumn.
+// they join the lily-pad physics: tethered by their stems, drifting, nudged by koi
+const HISHI_SITES = [{ x: -1.25, z: 1.72, n: 5, spread: 0.5 }, { x: -1.75, z: -2.05, n: 4, spread: 0.38 }];
+const hishi = [];
+for (const st of HISHI_SITES) {
+  for (let k = 0, tries = 0; k < st.n && tries < 120; tries++) {
+    const r = rr(0.11, 0.17), a = rr(0, TAU), dd = Math.sqrt(rnd()) * st.spread;
+    const x = st.x + Math.cos(a) * dd, z = st.z + Math.sin(a) * dd;
+    if (pondSDF(x, z) > -(r + 0.08)) continue;
+    if (pads.some((p) => Math.hypot(p.x - x, p.z - z) < p.r + r + 0.02)) continue;
+    if (hishi.some((h) => Math.hypot(h.x - x, h.z - z) < (h.r + r) * 0.95)) continue;
+    hishi.push({ x, z, vx: 0, vz: 0, rot: rr(0, TAU), vr: 0, r, ax: x, az: z, tether: rr(0.05, 0.12), bob: 0, vb: 0, seed: rnd(), red: rr(0.55, 1.0) });
+    k++;
+  }
+}
+const floaters = pads.concat(hishi);   // everything a swimmer has to go around
+const HMAX = 16;
+const uHishi = { value: Array.from({ length: HMAX }, () => new THREE.Vector4(0, 0, 0, 0)) };
+const hLeafA = [], hLeafB = [];
+hishi.forEach((h, hi) => {
+  const N = 26 + Math.floor(rnd() * 14);
+  for (let i = 0; i < N; i++) {
+    const f = (i + 0.5) / N;                                  // 0: the youngest leaf in the middle, 1: the oldest at the rim
+    const L = h.r * (0.21 + 0.26 * Math.sqrt(f)), W = L * rr(1.2, 1.4);
+    const d = Math.max(h.r * Math.sqrt(f) * 0.86 - L * 0.5, 0.004);
+    hLeafA.push(hi, i * 2.39996 + rr(-0.06, 0.06), d, L); hLeafB.push(W, f, rnd(), h.red);
+  }
+});
+const hishiGeo = new THREE.InstancedBufferGeometry();
+{
+  const pos = [], idx = [], nu = 3, nv = 10;
+  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) pos.push(i / (nu - 1) * 2 - 1, j / (nv - 1), 0);
+  for (let j = 0; j < nv - 1; j++) for (let i = 0; i < nu - 1; i++) { const a = j * nu + i; idx.push(a, a + 1, a + nu, a + 1, a + nu + 1, a + nu); }
+  hishiGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); hishiGeo.setIndex(idx);
+  hishiGeo.setAttribute('iA', new THREE.InstancedBufferAttribute(new Float32Array(hLeafA), 4));
+  hishiGeo.setAttribute('iB', new THREE.InstancedBufferAttribute(new Float32Array(hLeafB), 4));
+  hishiGeo.instanceCount = hLeafA.length / 4;
+}
+const hishiMesh = new THREE.Mesh(hishiGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform sampler2D uSurf; uniform vec4 uHishi[${HMAX}];
+attribute vec4 iA; attribute vec4 iB;   // rosette, angle, petiole length, blade length | blade width, age, seed, redness
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying vec4 vB; varying float vL; varying float vD;
+void main(){
+  vec4 H = uHishi[int(iA.x + 0.5)];                         // x, z, rotation, bob
+  float a = iA.y + H.z;
+  vec2 dir = vec2(cos(a), sin(a)), perp = vec2(-dir.y, dir.x);
+  float sm = position.y * (iA.z + iA.w);
+  vec2 xz = H.xy + dir * sm + perp * position.x * iB.x * 0.5;
+  vec4 sf = textureLod(uSurf, domUV(xz), 0.0);
+  float y = sf.x + H.w + 0.0016 + (1.0 - iB.y) * 0.002;    // younger leaves lie on top of the older ones
+  vW = vec3(xz.x, y, xz.y);
+  vN = normalize(vec3(-sf.y, 1.0, -sf.z));
+  vQ = vec2(position.x * iB.x * 0.5, sm);
+  vB = iB; vL = iA.w; vD = iA.z;
+  gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying vec4 vB; varying float vL; varying float vD;
+void main(){
+  float s = vQ.y, u = vQ.x;
+  float bl = (s - vD) / vL;
+  bool blade = bl > 0.0;
+  float hw;
+  if (blade) {
+    if (bl > 1.0) discard;
+    // rounded rhombus: a broad wedge-shaped, entire base and toothed outer margins meeting in a blunt point
+    float X = abs(u) / (0.5 * vB.x), Y = bl < 0.44 ? (0.44 - bl) / 0.44 : (bl - 0.44) / 0.56;
+    float rr0 = pow(pow(X, 1.45) + pow(Y, 1.45), 1.0 / 1.45);
+    float ang = atan(Y, X);
+    if (bl > 0.44) rr0 += 0.07 * fract(ang * 5.5 + vB.z * 3.0) * smoothstep(0.08, 0.5, ang);
+    if (rr0 > 1.0) discard;
+    hw = 0.5 * vB.x;
+  } else {
+    float ps = s / max(vD, 1e-3);                            // petiole with its spongy float swelling halfway along
+    hw = 0.0011 + 0.0024 * exp(-pow((ps - 0.62) / 0.17, 2.0)) * smoothstep(0.02, 0.05, vD);
+    if (abs(u) > hw) discard;
+  }
+  float f = vB.y * vB.w;
+  vec3 alb;
+  if (blade) {
+    float jit = hash11(vB.z * 91.0);
+    alb = mix(mix(vec3(0.032, 0.062, 0.013), vec3(0.066, 0.028, 0.010), smoothstep(0.0, 0.6, f + 0.2 * jit - 0.1)), vec3(0.056, 0.011, 0.008), smoothstep(0.55, 1.0, f + 0.2 * jit - 0.1));
+    alb *= 0.85 + 0.3 * vnoise(vQ * 260.0 + vB.z * 17.0);
+    float mid = 1.0 - smoothstep(0.0003, 0.0008, abs(u));
+    float lat = 1.0 - smoothstep(0.02, 0.09, abs(fract((bl * 7.0) - abs(u) / max(vB.x, 1e-3) * 4.0) - 0.5));
+    alb *= 1.0 + 0.25 * mid - 0.18 * lat * smoothstep(0.05, 0.3, bl);
+  } else alb = mix(vec3(0.05, 0.05, 0.015), vec3(0.09, 0.025, 0.014), f) * (1.0 + 0.2 * (1.0 - abs(u) / max(hw, 1e-4)));
+  vec3 N = normalize(vN), V = normalize(cameraPosition - vW);
+  float sh = sunShadow(vW, N);
+  float ndl = max(dot(N, uSunDir), 0.0);
+  vec3 col = alb * (uSunCol * ndl * sh + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55);
+  vec3 Hh = normalize(uSunDir + V);
+  float F = 0.04 + 0.96 * pow(1.0 - max(dot(V, Hh), 0.0), 5.0);
+  col += uSunCol * ggx(max(dot(N, Hh), 0.0), 0.14) * F * 0.22 * sh * ndl;            // waxy, glossy upper side
+  col += skyColor(reflect(-V, N), 0.0) * (0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0)) * 0.45;
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, { uHishi }, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
+hishiMesh.frustumCulled = false;
+onLayers(hishiMesh, LAYER.MAIN); scene.add(hishiMesh);
+
+// ---------------------------------------------------------------- duckweed (ウキクサ)
+// rafts of tiny floating fronds piled against the downwind shore. Each instance is a little cluster of fronds with a
+// home position: koi and swimming frogs shove clusters aside and open a lane that slowly closes behind them,
+// lily pads drifting in push them away, and grazing koi eat mouthfuls that grow back later
+const DUCK_RAFTS = [{ th: -1.72, len: 0.75, wid: 0.42 }, { th: -0.47, len: 0.95, wid: 0.48 }, { th: -0.08, len: 0.55, wid: 0.32 }, { th: 3.05, len: 0.45, wid: 0.26 }];
+const duck = [], duckRafts = [];
+for (const D of DUCK_RAFTS) {
+  const S0 = polarAt(D.th, 0); const [sx, sz] = snapToSdf(S0.x, S0.z, 0.0);
+  const [gx, gz] = pondGrad(sx, sz), gl = Math.hypot(gx, gz) || 1, nx = -gx / gl, nz = -gz / gl, tx = -nz, tz = nx;
+  const raft = { cx: sx + nx * D.wid * 0.5, cz: sz + nz * D.wid * 0.5, rad: Math.max(D.len, D.wid) + 0.15, list: [], movers: [], near: [], nearT: 0 };
+  const sp = 0.021;
+  for (let a = -D.len; a <= D.len; a += sp) for (let b = 0; b <= D.wid * 1.25; b += sp) {
+    const x = sx + tx * a + nx * b + rr(-0.45, 0.45) * sp, z = sz + tz * a + nz * b + rr(-0.45, 0.45) * sp;
+    if (pondSDF(x, z) > -0.035) continue;
+    // dense against the shore, ragged and thinning out towards open water
+    const e = (a / D.len) ** 2 + (b / D.wid) ** 2 + 0.6 * (vnoise(x * 2.3 + D.th * 7, z * 2.3) - 0.5);
+    if (rnd() > smooth(1.05, 0.5, e)) continue;
+    if (pads.some((q) => Math.hypot(q.x - x, q.z - z) < q.r)) continue;
+    const c = { x, z, hx: x, hz: z, vx: 0, vz: 0, r: rr(0.012, 0.016), seed: rnd(), vis: 1, eat: 0, grow: false, raft: duckRafts.length };
+    duck.push(c); raft.list.push(c);
+  }
+  duckRafts.push(raft);
+}
+const NDUCK = duck.length;
+const duckAttr = new THREE.InstancedBufferAttribute(new Float32Array(NDUCK * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const duckGeo = new THREE.InstancedBufferGeometry();
+duckGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+duckGeo.setIndex([0, 1, 2, 0, 2, 3]);
+duckGeo.setAttribute('iA', duckAttr); duckGeo.instanceCount = NDUCK;
+const duckMesh = new THREE.Mesh(duckGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform sampler2D uSurf;
+attribute vec4 iA;   // x, z, radius, seed
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying float vSeed;
+void main(){
+  vec4 sf = textureLod(uSurf, domUV(iA.xy), 0.0);
+  vec3 Nn = normalize(vec3(-sf.y, 1.0, -sf.z));
+  vec3 X = normalize(vec3(1.0, 0.0, 0.0) - Nn * Nn.x), Z = cross(X, Nn);
+  vec3 w = vec3(iA.x, sf.x + 0.0012, iA.y) + (X * position.x + Z * position.y) * iA.z;
+  vW = w; vN = Nn; vQ = position.xy; vSeed = iA.w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+varying vec3 vW; varying vec3 vN; varying vec2 vQ; varying float vSeed;
+void main(){
+  float fw = fwidth(vQ.x);
+  float nearK = 1.0 - smoothstep(0.07, 0.2, fw);             // close up: single fronds; far away: a mottled disc
+  vec3 alb; float hitF = -1.0; vec2 fl = vec2(0.0);
+  if (hash12(gl_FragCoord.xy + vSeed) < nearK) {
+    for (int i = 0; i < 12; i++){
+      float fi = float(i);
+      vec2 c = (vec2(hash11(vSeed * 13.1 + fi * 1.7), hash11(vSeed * 7.3 + fi * 3.1)) * 2.0 - 1.0) * 0.68;
+      float ang = hash11(vSeed * 3.7 + fi * 5.3) * 6.2832;
+      vec2 l = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * (vQ - c);
+      float sz = 0.23 + 0.10 * hash11(vSeed * 11.0 + fi);
+      vec2 e = l / vec2(sz, sz * 0.74);
+      e.x *= 1.0 + 0.18 * e.x;                                 // obovate: broader towards the apex
+      if (dot(e, e) < 1.0) { hitF = fi; fl = e; break; }
+    }
+    if (hitF < 0.0) discard;
+  } else {
+    if (dot(vQ, vQ) > 0.7) discard;
+    fl = vQ; hitF = floor(hash12(gl_FragCoord.xy) * 9.0);
+  }
+  float k = hash11(vSeed * 29.0 + hitF * 7.7);
+  alb = mix(vec3(0.055, 0.14, 0.018), vec3(0.10, 0.21, 0.025), k);
+  alb = mix(alb, vec3(0.17, 0.20, 0.035), step(0.86, k) * 0.7);                             // a few yellowing
+  alb = mix(alb, vec3(0.13, 0.045, 0.025), step(0.93, hash11(vSeed * 41.0 + hitF)) * 0.75); // autumn red ones
+  alb *= 0.82 + 0.18 * (1.0 - dot(fl, fl));
+  vec3 N = normalize(vN + vec3(fl.x, 0.0, fl.y) * 0.25), V = normalize(cameraPosition - vW);
+  float sh = sunShadow(vW, N);
+  float ndl = max(dot(N, uSunDir), 0.0);
+  vec3 col = alb * (uSunCol * ndl * sh + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55);
+  vec3 Hh = normalize(uSunDir + V);
+  float F = 0.04 + 0.96 * pow(1.0 - max(dot(V, Hh), 0.0), 5.0);
+  col += uSunCol * ggx(max(dot(N, Hh), 0.0), 0.16) * F * 0.18 * sh * ndl;                 // water-repellent gloss
+  col += skyColor(reflect(-V, N), 0.0) * (0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0)) * 0.35;
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
+duckMesh.frustumCulled = false;
+onLayers(duckMesh, LAYER.MAIN); scene.add(duckMesh);
+
+
+// ================================================================= lotus (ハス)
+// a few low leaves held up just above the water on their stalks — wide, cupped and wavy-edged, blue-green with a waxy
+// bloom that water beads up on and rolls across into a pool in the middle — and round leaves floating on the water.
+// The frogs can hop up onto the standing leaves.
+const LOTUS_C = { x: -0.95, z: 0.45 };
+let lotus = [];
+{
+  const spec = [[0.30, 0.21, 0], [0.26, 0.19, 0], [0.44, 0.23, 0], [0.58, 0.24, 0.55], [0.34, 0.18, 0.2], [0.68, 0.2, 0.8], [0.0, 0.19, 0.1], [0.0, 0.16, 0.4]];
+  spec.forEach(([H, R, age], i) => {
+    let x = 0, z = 0;
+    for (let tries = 0; tries < 60; tries++) {
+      const a = rr(0, TAU), d = Math.sqrt(rnd()) * 0.55; x = LOTUS_C.x + Math.cos(a) * d; z = LOTUS_C.z + Math.sin(a) * d;
+      if (pondSDF(x, z) > -0.35) continue;
+      if (lotus.some((o) => Math.hypot(o.x - x, o.z - z) < (o.r + R) * (H > 0 && o.H > 0 && Math.abs(o.H - H) > 0.12 ? 0.55 : 0.95))) continue;
+      if (floaters.some((p) => Math.hypot(p.x - x, p.z - z) < p.r + R * (H > 0 ? 0.3 : 1.0))) continue;
+      break;
+    }
+    const lean = rr(0, TAU), lk = H > 0 ? rr(0.02, 0.08) : 0;
+    lotus.push({ lotus: true, i, bx: x, bz: z, x: x + Math.cos(lean) * lk, z: z + Math.sin(lean) * lk, y: H, H, r: R, rot: rr(0, TAU), cup: H > 0 ? rr(0.16, 0.26) : 0.03, wave: H > 0 ? rr(0.03, 0.06) : 0.012,
+      waveN: 5 + Math.floor(rnd() * 3), waveP: rr(0, TAU), age, tx0: rr(-0.12, 0.12), tz0: rr(-0.12, 0.12), tx: 0, tz: 0, ph: rr(0, TAU),
+      ax: x, az: z, bob: 0, vb: 0, layer: 0, weight: 1, curl: 0, vx: 0, vz: 0, perch: H > 0 && H < 0.47 && R > 0.18 && age < 0.3, drops: [], pool: rr(0.6, 1.4) });
+  });
+}
+for (const L of lotus) { L.x0 = L.x; L.z0 = L.z; L.respawn = rr(5, 20); }
+// taller leaves and seed heads were laid out together with these and later taken out again: drawing the same random
+// numbers they used keeps every other plant in the garden exactly where it was
+for (let i = 0; i < 4; i++) {
+  const a = rr(0, TAU), d = Math.sqrt(rnd()) * 0.4;
+  if (pondSDF(LOTUS_C.x + Math.cos(a) * d, LOTUS_C.z + Math.sin(a) * d) > -0.3) continue;
+  rr(0.62, 0.9); if (i === 3) rr(0.5, 0.9); else rr(0.0, 0.2); rr(0, TAU); rr(0, TAU); rr(0.5, 1);
+}
+for (const L of lotus) {
+  if (L.H <= 0) continue;
+  const n = 4 + Math.floor(rnd() * 7);
+  for (let i = 0; i < n; i++) { const a = rr(0, TAU), d = Math.sqrt(rnd()) * L.r * 0.8; L.drops.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, vx: 0, vz: 0, r: rr(0.0025, 0.006) }); }
+}
+// keep the low ones: the leaves floating on the water and the three lowest standing leaves
+lotus = lotus.filter((L) => L.H < 0.4);
+lotus.forEach((L, i) => { L.i = i; });
+const NLOTUS = lotus.length;
+const lotusFloat = lotus.filter((L) => L.H <= 0), lotusStand = lotus.filter((L) => L.H > 0);
+for (const L of lotusFloat) { L.tether = 0.1; L.vr = 0; }
+// the leaf surface: height above the leaf centre at local (lx, lz)
+function lotusLocalH(L, lx, lz) {
+  const r = Math.hypot(lx, lz) / L.r, th = Math.atan2(lz, lx) - L.rot;
+  return L.cup * L.r * Math.pow(Math.min(r, 1), 1.7) + L.wave * L.r * Math.pow(Math.min(r, 1), 3) * Math.sin(th * L.waveN + L.waveP) + L.tx * lx + L.tz * lz;
+}
+const uLotA = { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uLotB = { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uLotC = { value: Array.from({ length: 12 }, () => new THREE.Vector4()) };
+const lotusGeo = new THREE.InstancedBufferGeometry();
+{
+  const pos = [], idx = [], nr = 12, ns = 48;
+  pos.push(0, 0, 0);
+  for (let i = 1; i <= nr; i++) for (let j = 0; j < ns; j++) pos.push(Math.pow(i / nr, 0.85), j / ns * TAU, 0);
+  for (let j = 0; j < ns; j++) idx.push(0, 1 + (j + 1) % ns, 1 + j);
+  for (let i = 1; i < nr; i++) for (let j = 0; j < ns; j++) { const a = 1 + (i - 1) * ns + j, b = 1 + (i - 1) * ns + (j + 1) % ns, c = a + ns, d = b + ns; idx.push(a, b, c, b, d, c); }
+  lotusGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); lotusGeo.setIndex(idx);
+  lotusGeo.setAttribute('iIdx', new THREE.InstancedBufferAttribute(new Float32Array(lotus.map((_, i) => i)), 1));
+  lotusGeo.instanceCount = NLOTUS;
+}
+const lotusMesh = new THREE.Mesh(lotusGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform vec4 uLotA[12]; uniform vec4 uLotB[12]; uniform vec4 uLotC[12];
+attribute float iIdx;
+varying vec3 vW; varying vec3 vN; varying vec2 vP; varying vec4 vC; varying float vI;
+void main(){
+  int i = int(iIdx + 0.5);
+  vec4 A = uLotA[i], B = uLotB[i], C = uLotC[i];       // centre, radius | tilt x, tilt z, cup, rotation | wave, wave count, wave phase, age
+  float r = max(position.x, 0.004), th = position.y;
+  float R = A.w, ph = th * C.y + C.z;
+  float h = B.z * R * pow(r, 1.7) + C.x * R * r * r * r * sin(ph);
+  float dhr = B.z * R * 1.7 * pow(r, 0.7) + C.x * R * 3.0 * r * r * sin(ph), dht = C.x * R * r * r * r * C.y * cos(ph);
+  float a = th + B.w;
+  vec3 lp = vec3(cos(a) * r * R, h, sin(a) * r * R);
+  lp.y += B.x * lp.x + B.y * lp.z;
+  vec3 dr = vec3(cos(a) * R, dhr, sin(a) * R); dr.y += B.x * dr.x + B.y * dr.z;
+  vec3 dt = vec3(-sin(a) * r * R, dht, cos(a) * r * R); dt.y += B.x * dt.x + B.y * dt.z;
+  vN = normalize(cross(dt, dr)); if (vN.y < 0.0) vN = -vN;
+  vW = A.xyz + lp; vP = vec2(position.x, th); vC = C; vI = iIdx;
+  gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+uniform vec4 uFrogA[5]; uniform vec4 uFrogB[5];
+varying vec3 vW; varying vec3 vN; varying vec2 vP; varying vec4 vC; varying float vI;
+void main(){
+  float r = vP.x, th = vP.y, age = vC.w, seed = vI * 7.31;
+  // autumn: old leaves tear and fray from the margin inwards
+  float tear = fbm(vec2(th * 4.0 + seed, r * 3.0)) + 0.6 * r;
+  if (age > 0.3 && tear > 1.25 - 0.45 * age) discard;
+  if (r > 0.985 - 0.03 * vnoise(vec2(th * 30.0, seed))) discard;
+  if (IS_SHADOW) { if (vW.y < 0.03) discard; gl_FragColor = vec4(0.0); return; }
+  bool top = gl_FrontFacing;
+  // fine veins radiating from the navel, forking towards the margin
+  float nv = 19.0;
+  float v1 = abs(fract(th / 6.2832 * nv + seed) - 0.5);
+  float v2 = abs(fract(th / 6.2832 * nv * 2.0 + seed + 0.5) - 0.5) + (1.0 - smoothstep(0.45, 0.6, r));
+  float vein = (1.0 - smoothstep(0.0, 0.035, v1)) * smoothstep(0.05, 0.2, r) + (1.0 - smoothstep(0.0, 0.03, v2)) * 0.6;
+  vec3 alb = mix(vec3(0.030, 0.078, 0.045), vec3(0.055, 0.115, 0.060), vnoise(vec2(th * 3.0 + seed, r * 4.0)));
+  alb *= 1.0 + 0.35 * vein;
+  alb = mix(alb, vec3(0.20, 0.22, 0.10), 1.0 - smoothstep(0.03, 0.07, r));                  // pale navel
+  float yel = smoothstep(0.1, 0.9, age) * smoothstep(0.35, 0.95, r + 0.4 * fbm(vec2(th * 2.0 + seed * 3.0, r * 2.0)) - 0.2);
+  alb = mix(alb, mix(vec3(0.20, 0.16, 0.04), vec3(0.11, 0.065, 0.03), smoothstep(0.5, 1.0, age)), yel);
+  if (!top) alb = mix(vec3(0.07, 0.10, 0.05), vec3(0.12, 0.09, 0.07), 0.4);
+  vec3 N = normalize(vN); if (!top) N = -N;
+  vec3 V = normalize(cameraPosition - vW);
+  float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
+  // frogs sitting on the leaf shade it
+  for (int i = 0; i < 5; i++) {
+    vec4 fa = uFrogA[i];
+    float hh = fa.y - vW.y;
+    if (hh > -0.01 && hh < 0.12) vis *= 1.0 - 0.6 * (1.0 - smoothstep(0.4, 1.3, length(vW.xz - fa.xz) / max(uFrogB[i].x, 0.01)));
+  }
+  float ndl = sat(dot(N, uSunDir));
+  vec3 col = alb * (uSunCol * ndl * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.6 * ao);
+  // the waxy bloom: a soft, whitish sheen rather than a sharp gloss
+  float F = pow(1.0 - sat(dot(N, V)), 3.0);
+  col += mix(uSkyHor, uSkyTop, 0.5) * (0.06 + 0.35 * F) * 0.35 * (top ? 1.0 : 0.3);
+  vec3 H = normalize(uSunDir + V);
+  col += uSunCol * ggx(max(dot(N, H), 0.0), 0.45) * 0.03 * vis * ndl;
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, { uLotA, uLotB, uLotC }, { side: THREE.DoubleSide }));
+lotusMesh.frustumCulled = false;
+onLayers(lotusMesh, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(lotusMesh);
+// stalks (ribbons, reusing the garden-plant ribbon material)
+RIB.p = []; RIB.t = []; RIB.w = []; RIB.c = []; RIB.s = []; RIB.idx = [];
+for (const L of lotusStand) {
+  const sway = [L.bx, L.bz, 0, L.ph, 1];
+  ribbon(bez3([L.bx, -0.08, L.bz], [L.bx, L.H * 0.5, L.bz], [L.x, L.H - 0.005, L.z], 10), () => 0.0055, [0.07, 0.09, 0.035, 0], sway);
+}
+const lotusRibGeo = new THREE.BufferGeometry();
+lotusRibGeo.setAttribute('position', new THREE.Float32BufferAttribute(RIB.p, 3));
+lotusRibGeo.setAttribute('aT', new THREE.Float32BufferAttribute(RIB.t, 3));
+lotusRibGeo.setAttribute('aW', new THREE.Float32BufferAttribute(RIB.w, 1));
+lotusRibGeo.setAttribute('aC', new THREE.Float32BufferAttribute(RIB.c, 4));
+lotusRibGeo.setAttribute('aS', new THREE.Float32BufferAttribute(RIB.s, 4));
+lotusRibGeo.setIndex(RIB.idx);
+const lotusRibMesh = new THREE.Mesh(lotusRibGeo, ribMesh.material);
+lotusRibMesh.frustumCulled = false;
+onLayers(lotusRibMesh, LAYER.MAIN, LAYER.REFL); scene.add(lotusRibMesh);
+// water beads on the leaves
+const MAXBEAD = 200;
+const beadAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAXBEAD * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const beadGeo = new THREE.InstancedBufferGeometry();
+beadGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+beadGeo.setIndex([0, 1, 2, 0, 2, 3]);
+beadGeo.setAttribute('iB', beadAttr); beadGeo.instanceCount = 0;
+const beadMesh = new THREE.Mesh(beadGeo, smat(/* glsl */`
+${GL_COMMON}
+attribute vec4 iB; varying vec2 vC; varying vec3 vW; varying float vR;
+void main(){
+  vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+  vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+  vC = position.xy; vR = iB.w;
+  vW = iB.xyz + vec3(0.0, iB.w * 0.85, 0.0) + (right * position.x + up * position.y) * iB.w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+varying vec2 vC; varying vec3 vW; varying float vR;
+void main(){
+  float r = length(vC); if (r > 1.0) discard;
+  if (IS_SHADOW) discard;
+  // a bead of water standing on wax: it shows the leaf behind it, a dark refracting rim, the sun's glint and a bright focus
+  vec3 Nv = vec3(vC, sqrt(1.0 - r * r));
+  vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]), up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+  vec3 V = normalize(cameraPosition - vW);
+  vec3 N = normalize(right * Nv.x + up * Nv.y + V * Nv.z);
+  float sh = sunShadow(vW, N);
+  vec3 leaf = vec3(0.05, 0.10, 0.06) * (uSunCol * 0.6 * sh + mix(uSkyHor, uSkyTop, 0.5) * 0.6);
+  vec3 col = leaf * (1.25 - 0.9 * smoothstep(0.55, 1.0, r));
+  float F = 0.02 + 0.98 * pow(1.0 - Nv.z, 5.0);
+  col += skyColor(reflect(-V, N), 0.0) * F * 0.9;
+  vec3 H = normalize(uSunDir + V);
+  col += uSunCol * pow(max(dot(N, H), 0.0), 400.0) * 6.0 * sh;
+  col += uSunCol * 0.25 * (1.0 - smoothstep(0.0, 0.35, length(vC + vec2(uSunDir.x, uSunDir.z) * 0.45))) * sh;
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`));
+beadMesh.frustumCulled = false;
+onLayers(beadMesh, LAYER.MAIN); scene.add(beadMesh);
+// the floating leaves drift with the lily pads; the standing ones are perches the frogs can hop up onto
+// (added after the lily pads, so the pad rendering never sees them)
+for (const L of lotusFloat) floaters.push(L);
+const LOTUS0 = pads.length;
+for (const L of lotusStand) pads.push(L);
+const lotusStemBase = lotusStand.map((L) => ({ x: L.bx, z: L.bz, ax: L.bx, az: L.bz, lift: 1 }));   // the underwater part of their stalks
+
+// ================================================================= weeping willow (枝垂れ柳)
+// on the far bank beside the lantern: a leaning trunk, arching boughs and curtains of hanging, leafy twigs that sway
+// in the wind; the longest ones trail their tips in the water and draw little rings on it
+const WILLOW = Object.assign(polarAt(-1.05, 0.95), {});
+const willowTips = [];
+{
+  const bp = [], bn = [], bs = [], bi = [];
+  const tube = (pts, r0, r1) => {
+    const nr = 8, base = bp.length / 3;
+    for (let i = 0; i < pts.length; i++) {
+      const t = i / (pts.length - 1), p0 = pts[Math.max(i - 1, 0)], p1 = pts[Math.min(i + 1, pts.length - 1)];
+      const T = V3(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]).normalize();
+      let U = V3(0, 1, 0).cross(T); if (U.lengthSq() < 1e-4) U.set(1, 0, 0); U.normalize();
+      const W = V3().crossVectors(T, U), r = lerp(r0, r1, t);
+      for (let j = 0; j < nr; j++) { const a = j / nr * TAU, n = U.clone().multiplyScalar(Math.cos(a)).addScaledVector(W, Math.sin(a)); bp.push(pts[i][0] + n.x * r, pts[i][1] + n.y * r, pts[i][2] + n.z * r); bn.push(n.x, n.y, n.z); bs.push(77); }
+    }
+    for (let i = 0; i < pts.length - 1; i++) for (let j = 0; j < nr; j++) { const a = base + i * nr + j, b = base + i * nr + (j + 1) % nr, c = a + nr, d = b + nr; bi.push(a, c, b, b, c, d); }
+  };
+  const y0 = terrainH(WILLOW.x, WILLOW.z);
+  const [gx, gz] = pondGrad(WILLOW.x, WILLOW.z), gl = Math.hypot(gx, gz) || 1, toward = [-gx / gl, 0, -gz / gl];   // towards the water
+  const crown = [WILLOW.x + toward[0] * 0.35, y0 + 2.2, WILLOW.z + toward[2] * 0.35];
+  tube(bez3([WILLOW.x, y0 - 0.1, WILLOW.z], [WILLOW.x + toward[0] * 0.05, y0 + 1.1, WILLOW.z + toward[2] * 0.05], crown, 8), 0.12, 0.07);
+  // strands of the curtain
+  RIB.p = []; RIB.t = []; RIB.w = []; RIB.c = []; RIB.s = []; RIB.idx = [];
+  const WS = { p: [], t: [], w: [], s: [], idx: [] };
+  const strand = (o, len, out) => {
+    const pts = [], n = 22;
+    for (let i = 0; i <= n; i++) {
+      const s = i / n, hang = Math.pow(s, 0.8);
+      pts.push([o[0] + out[0] * (0.25 * s - 0.1 * s * s) * len * 0.3, o[1] + 0.06 * len * Math.sin(Math.PI * Math.min(s * 3, 1)) * 0.3 - len * hang, o[2] + out[2] * (0.25 * s - 0.1 * s * s) * len * 0.3]);
+    }
+    const base = WS.p.length / 3, ph = rr(0, TAU), seed = rnd();
+    for (let i = 0; i <= n; i++) {
+      const p = pts[i], a = pts[Math.max(i - 1, 0)], b = pts[Math.min(i + 1, n)];
+      const T = v3n([b[0] - a[0], b[1] - a[1], b[2] - a[2]]), w = 0.034 * (0.35 + 0.65 * Math.min(i / 3, 1)) * (1 - 0.35 * i / n);
+      for (const sg of [-1, 1]) { WS.p.push(p[0], p[1], p[2]); WS.t.push(T[0], T[1], T[2]); WS.w.push(sg * w); WS.s.push(o[1] - p[1], ph, i / n * len, seed); }
+    }
+    for (let i = 0; i < n; i++) { const a = base + i * 2; WS.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    const tip = pts[n];
+    if (pondSDF(tip[0], tip[2]) < -0.05 && tip[1] < 0.06) willowTips.push({ x: tip[0], y: tip[1], z: tip[2], depth: o[1] - tip[1], ph, t: rr(0, 1) });
+  };
+  const nb = 6;
+  for (let b = 0; b < nb; b++) {
+    // the boughs fan out over the water and away from the lantern, so they never hang in front of it
+    const la = Math.atan2(LANT.z - WILLOW.z, LANT.x - WILLOW.x), ta = Math.atan2(toward[2], toward[0]);
+    const side = Math.sign(wrapAngle(la - ta)) || 1;
+    const a = ta - side * (b / (nb - 1) * 1.9 - 0.55) + rr(-0.12, 0.12), reach = rr(1.0, 1.7);
+    const out = [Math.cos(a), 0, Math.sin(a)];
+    const mid = [crown[0] + out[0] * reach * 0.45, crown[1] + rr(0.5, 0.8), crown[2] + out[2] * reach * 0.45];
+    const end = [crown[0] + out[0] * reach, crown[1] + rr(0.1, 0.5), crown[2] + out[2] * reach];
+    const pts = bez3(crown, mid, end, 8);
+    tube(pts, 0.05, 0.012);
+    // twigs hang from the outer two thirds of each bough
+    const ns = 34 + Math.floor(rnd() * 10);
+    for (let k = 0; k < ns; k++) {
+      const s = rr(0.3, 1.0), q = pts[Math.round(s * 8)];
+      const o = [q[0] + rr(-0.08, 0.08), q[1] + rr(-0.05, 0.03), q[2] + rr(-0.08, 0.08)];
+      const g0 = pondSDF(o[0], o[2]) < 0 ? 0.0 : terrainH(o[0], o[2]);
+      const maxLen = o[1] - g0;
+      const len = pondSDF(o[0], o[2]) < -0.1 && rnd() < 0.35 ? maxLen * rr(0.97, 1.03) : maxLen * rr(0.45, 0.88);
+      strand(o, Math.max(len, 0.3), out);
+    }
+  }
+  const tg = new THREE.BufferGeometry();
+  tg.setAttribute('position', new THREE.Float32BufferAttribute(bp, 3)); tg.setAttribute('normal', new THREE.Float32BufferAttribute(bn, 3)); tg.setAttribute('aSeed', new THREE.Float32BufferAttribute(bs, 1));
+  tg.setIndex(bi);
+  const trunk = new THREE.Mesh(tg, barkMesh.material);
+  trunk.frustumCulled = false;
+  onLayers(trunk, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(trunk);
+  const sg = new THREE.BufferGeometry();
+  sg.setAttribute('position', new THREE.Float32BufferAttribute(WS.p, 3)); sg.setAttribute('aT', new THREE.Float32BufferAttribute(WS.t, 3));
+  sg.setAttribute('aW', new THREE.Float32BufferAttribute(WS.w, 1)); sg.setAttribute('aS', new THREE.Float32BufferAttribute(WS.s, 4));
+  sg.setIndex(WS.idx);
+  const strands = new THREE.Mesh(sg, smat(/* glsl */`
+${GL_COMMON}
+${GL_LAND}
+uniform vec2 uWind;
+attribute vec3 aT; attribute float aW; attribute vec4 aS;   // hang below the bough, phase, length along, seed
+varying vec3 vW; varying vec3 vSide; varying vec3 vT; varying vec2 vQ; varying float vSeed;
+vec3 willowSway(float dep, float ph){
+  vec2 d = vec2(sin(uTime * 0.85 + ph), cos(uTime * 0.7 + ph * 1.3)) * (0.025 + 0.05 * uWindK) + uWind * (0.03 + 0.32 * uWindK) * (0.8 + 0.2 * sin(uTime * 1.7 + ph));
+  return vec3(d.x, 0.0, d.y) * pow(dep, 1.3);
+}
+void main(){
+  vec3 P = position + willowSway(aS.x, aS.y);
+  // the tips rest on the water or the ground instead of passing through
+  vec2 fl = texture(uFloorTex, domUV(P.xz)).rg;
+  P.y = max(P.y, fl.g < 0.0 ? 0.004 : fl.r + 0.01);
+  vec3 toCam = normalize(cameraPosition - P);
+  vec3 side = normalize(cross(aT, toCam) + vec3(1e-6, 0.0, 0.0));
+  P += side * aW;
+  vW = P; vSide = side; vT = aT; vQ = vec2(sign(aW), aS.z); vSeed = aS.w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_LAND}
+varying vec3 vW; varying vec3 vSide; varying vec3 vT; varying vec2 vQ; varying float vSeed;
+void main(){
+  // narrow willow leaves hanging alternately from the twig, angled down and out
+  float u = abs(vQ.x), s = vQ.y;
+  float t = s * 46.0 - u * 1.7 + (vQ.x > 0.0 ? 0.5 : 0.0) + vSeed * 7.0;
+  float f = fract(t) - 0.5;
+  bool twig = u < 0.06;
+  if (!twig && (abs(f) > 0.17 * (1.0 - pow(u, 2.2)) || u > 0.97)) discard;
+  if (IS_SHADOW) { gl_FragColor = vec4(0.0); return; }
+  float k = hash11(floor(t) + vSeed * 31.0);
+  vec3 alb = mix(vec3(0.07, 0.15, 0.035), vec3(0.13, 0.21, 0.05), k);
+  alb = mix(alb, vec3(0.26, 0.24, 0.07), step(0.88, k) * 0.8);       // a few already yellow
+  if (twig) alb = vec3(0.09, 0.08, 0.04);
+  vec3 V = normalize(cameraPosition - vW);
+  vec3 fwd = normalize(cross(vSide, vT)); if (dot(fwd, V) < 0.0) fwd = -fwd;
+  vec3 N = normalize(fwd + vSide * vQ.x * 0.4);
+  float ao; float vis = rockShade(vW, ao) * sunShadow(vW, N);
+  float back = pow(sat(dot(-V, uSunDir)), 2.0);
+  vec3 col = alb * (uSunCol * (sat(dot(N, uSunDir)) * 0.8 + 0.25 + 0.7 * back) * vis + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.55);
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`, {}, { side: THREE.DoubleSide }));
+  strands.frustumCulled = false;
+  onLayers(strands, LAYER.MAIN, LAYER.REFL, LAYER.SHADOW); scene.add(strands);
+}
+
+// ================================================================= koi
+const KOI_DEF = [
+  { v: 0, L: 0.58 }, { v: 1, L: 0.52 }, { v: 2, L: 0.55 }, { v: 3, L: 0.49 }, { v: 3, L: 0.45 },
+  { v: 1, L: 0.53 }, { v: 0, L: 0.47 }, { v: 2, L: 0.68 }, { v: 0, L: 0.41 },
+  { v: 1, L: 0.44 }, { v: 3, L: 0.38 }, { v: 2, L: 0.50 },
+];
+const KP = [
+  [0.000, 0.004, 0.003, -0.006], [0.004, 0.018, 0.015, -0.007], [0.012, 0.032, 0.026, -0.007], [0.040, 0.066, 0.052, -0.005],
+  [0.090, 0.098, 0.072, -0.002], [0.160, 0.121, 0.085, 0.003], [0.260, 0.135, 0.092, 0.008], [0.380, 0.133, 0.088, 0.010],
+  [0.500, 0.117, 0.074, 0.008], [0.620, 0.090, 0.054, 0.006], [0.720, 0.064, 0.037, 0.005], [0.800, 0.048, 0.025, 0.005],
+  [0.860, 0.042, 0.012, 0.006], [0.875, 0.040, 0.006, 0.006],
+];
+function koiProfile(s) {
+  let i = 0; while (i < KP.length - 2 && KP[i + 1][0] < s) i++;
+  const p0 = KP[Math.max(i - 1, 0)], p1 = KP[i], p2 = KP[i + 1], p3 = KP[Math.min(i + 2, KP.length - 1)];
+  const t = clamp((s - p1[0]) / (p2[0] - p1[0]), 0, 1);
+  const cr = (a, b, c, d) => 0.5 * ((2 * b) + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (-a + 3 * b - 3 * c + d) * t * t * t);
+  return { h: Math.max(cr(p0[1], p1[1], p2[1], p3[1]), 0.002), w: Math.max(cr(p0[2], p1[2], p2[2], p3[2]), 0.002), c: cr(p0[3], p1[3], p2[3], p3[3]) };
+}
+function buildKoi() {
+  const body = { pos: [], nor: [], s: [], part: [], fin: [], body: [], idx: [] };
+  const NR = 64, NA = 36;
+  const ringS = [];
+  for (let i = 0; i <= NR; i++) ringS.push(0.875 * Math.pow(i / NR, 1.25));
+  for (let i = 0; i <= NR; i++) {
+    const s = ringS[i]; const pr = koiProfile(s);
+    // arc length for scale coordinates
+    const pts = [];
+    for (let j = 0; j < NA; j++) {
+      const th = j / NA * TAU;
+      const sn = Math.sin(th), cs = Math.cos(th);
+      const y = pr.c + pr.h * sn * (sn < 0 ? 0.88 : 1.0);
+      const z = pr.w * cs * (1.0 + 0.05 * Math.max(-sn, 0));
+      pts.push([y, z, sn, cs]);
+    }
+    let arc = 0; const arcs = [];
+    for (let j = 0; j < NA; j++) {
+      // measure from the dorsal midline (j = NA/4)
+      arcs.push(0);
+    }
+    const top = NA / 4;
+    let acc = 0; arcs[top] = 0;
+    for (let k = 1; k <= NA / 2; k++) {
+      const a = (top + k) % NA, b = (top + k - 1) % NA;
+      acc += Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]); arcs[a] = acc;
+    }
+    acc = 0;
+    for (let k = 1; k < NA / 2; k++) {
+      const a = (top - k + NA) % NA, b = (top - k + 1 + NA) % NA;
+      acc += Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]); arcs[a] = -acc;
+    }
+    for (let j = 0; j < NA; j++) {
+      const [y, z, sn, cs] = pts[j];
+      body.pos.push(0.5 - s, y, z);
+      body.s.push(s); body.part.push(0); body.fin.push(0, 0);
+      body.body.push(sn, cs, s / 0.021, arcs[j] / 0.021);
+      body.nor.push(0, 0, 0);
+    }
+  }
+  for (let i = 0; i < NR; i++) for (let j = 0; j < NA; j++) {
+    const a = i * NA + j, b = i * NA + (j + 1) % NA, c = a + NA, d = (i + 1) * NA + (j + 1) % NA;
+    body.idx.push(a, b, c, b, d, c);
+  }
+  // cap tail end
+  const capC = body.pos.length / 3; const pe = koiProfile(0.875);
+  body.pos.push(0.5 - 0.876, pe.c, 0); body.s.push(0.876); body.part.push(0); body.fin.push(0, 0); body.body.push(0, 1, 0.876 / 0.021, 0); body.nor.push(-1, 0, 0);
+  for (let j = 0; j < NA; j++) body.idx.push(NR * NA + j, NR * NA + (j + 1) % NA, capC);
+  // eyes
+  function addSphere(cx, cy, cz, r, part, seg = 14) {
+    const base = body.pos.length / 3;
+    for (let i = 0; i <= seg; i++) for (let j = 0; j <= seg; j++) {
+      const th = i / seg * Math.PI, ph = j / seg * TAU;
+      const nx = Math.sin(th) * Math.cos(ph), ny = Math.cos(th), nz = Math.sin(th) * Math.sin(ph);
+      body.pos.push(cx + nx * r, cy + ny * r, cz + nz * r); body.nor.push(nx, ny, nz);
+      body.s.push(0.5 - cx); body.part.push(part); body.fin.push(nx, nz); body.body.push(ny, cz > 0 ? 1 : -1, 0, 0);
+    }
+    for (let i = 0; i < seg; i++) for (let j = 0; j < seg; j++) {
+      const a = base + i * (seg + 1) + j, b = a + 1, c = a + seg + 1, d = c + 1;
+      body.idx.push(a, c, b, b, c, d);
+    }
+  }
+  const se = 0.072, pre = koiProfile(se);
+  for (const sd of [1, -1]) addSphere(0.5 - se, pre.c + 0.06 * pre.h, sd * pre.w * 0.86, 0.0175, 3);
+  // barbels
+  function addTube(p0, p1, p2, r0, r1, part) {
+    const base = body.pos.length / 3; const nl = 8, nr = 6;
+    for (let i = 0; i <= nl; i++) {
+      const t = i / nl;
+      const P = [0, 1, 2].map(k => (1 - t) * (1 - t) * p0[k] + 2 * (1 - t) * t * p1[k] + t * t * p2[k]);
+      const T = [0, 1, 2].map(k => 2 * (1 - t) * (p1[k] - p0[k]) + 2 * t * (p2[k] - p1[k]));
+      const tl = Math.hypot(...T); T[0] /= tl; T[1] /= tl; T[2] /= tl;
+      let U = [T[1] * 0 - T[2] * 1, T[2] * 0 - T[0] * 0, T[0] * 1 - T[1] * 0]; // T x (0,0,1)? use simple perpendicular
+      U = [-T[1], T[0], 0]; const ul = Math.hypot(...U) || 1; U = U.map(x => x / ul);
+      const W = [T[1] * U[2] - T[2] * U[1], T[2] * U[0] - T[0] * U[2], T[0] * U[1] - T[1] * U[0]];
+      const r = r0 + (r1 - r0) * t;
+      for (let j = 0; j < nr; j++) {
+        const a = j / nr * TAU; const n = [0, 1, 2].map(k => U[k] * Math.cos(a) + W[k] * Math.sin(a));
+        body.pos.push(P[0] + n[0] * r, P[1] + n[1] * r, P[2] + n[2] * r); body.nor.push(...n);
+        body.s.push(0.5 - P[0]); body.part.push(part); body.fin.push(t, 0); body.body.push(0, 0, 0, 0);
+      }
+    }
+    for (let i = 0; i < nl; i++) for (let j = 0; j < nr; j++) {
+      const a = base + i * nr + j, b = base + i * nr + (j + 1) % nr, c = a + nr, d = b + nr;
+      body.idx.push(a, c, b, b, c, d);
+    }
+  }
+  const pm = koiProfile(0.02);
+  for (const sd of [1, -1]) {
+    addTube([0.5 - 0.022, pm.c - 0.35 * pm.h, sd * pm.w * 0.72], [0.5 - 0.005, pm.c - 0.75 * pm.h, sd * pm.w * 1.1], [0.5 + 0.012, pm.c - 1.2 * pm.h, sd * pm.w * 1.5], 0.0042, 0.0012, 4);
+    addTube([0.5 - 0.010, pm.c - 0.15 * pm.h, sd * pm.w * 0.5], [0.5 + 0.004, pm.c - 0.35 * pm.h, sd * pm.w * 0.8], [0.5 + 0.012, pm.c - 0.6 * pm.h, sd * pm.w * 1.0], 0.003, 0.001, 4);
+  }
+  const bodyGeo = new THREE.BufferGeometry();
+  bodyGeo.setAttribute('position', new THREE.Float32BufferAttribute(body.pos, 3));
+  bodyGeo.setAttribute('aS', new THREE.Float32BufferAttribute(body.s, 1));
+  bodyGeo.setAttribute('aPart', new THREE.Float32BufferAttribute(body.part, 1));
+  bodyGeo.setAttribute('aFin', new THREE.Float32BufferAttribute(body.fin, 2));
+  bodyGeo.setAttribute('aBody', new THREE.Float32BufferAttribute(body.body, 4));
+  bodyGeo.setIndex(body.idx);
+  bodyGeo.computeVertexNormals();
+  // keep analytic normals for spheres/tubes (computeVertexNormals is fine for all as they're closed)
+
+  // fins
+  const F = { pos: [], nor: [], s: [], part: [], fin: [], idx: [] };
+  function finGrid(nu, nv, fn, part) {
+    const base = F.pos.length / 3;
+    for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) {
+      const u = i / nu, v = j / nv;
+      const [x, y, z, nx, ny, nz] = fn(u, v);
+      F.pos.push(x, y, z); F.nor.push(nx, ny, nz); F.s.push(0.5 - x); F.part.push(part); F.fin.push(u, v);
+    }
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+      const a = base + i * (nv + 1) + j, b = a + 1, c = a + nv + 1, d = c + 1;
+      F.idx.push(a, c, b, b, c, d);
+    }
+  }
+  // caudal (forked)
+  const pc = koiProfile(0.85);
+  finGrid(12, 20, (u, v) => {
+    const b = v * 2 - 1;
+    const lenE = 0.20 * (0.58 + 0.42 * Math.pow(Math.abs(b), 0.75));
+    const s = 0.85 + lenE * u;
+    const y = pc.c + b * (0.036 + 0.105 * Math.pow(u, 0.85));
+    return [0.5 - s, y, 0, 0, 0, 1];
+  }, 5);
+  // dorsal
+  finGrid(7, 16, (u, v) => {
+    const s0 = 0.30 + 0.34 * v;
+    const pr = koiProfile(s0);
+    const ht = 0.088 * Math.pow(1 - v, 0.55) * (0.35 + 0.65 * smooth(0, 0.12, v)) + 0.01;
+    const s = s0 + 0.045 * u * (0.4 + v);
+    return [0.5 - s, pr.c + pr.h * 0.97 + ht * u, 0, 0, 0, 1];
+  }, 1);
+  // anal
+  finGrid(5, 8, (u, v) => {
+    const s0 = 0.66 + 0.07 * v; const pr = koiProfile(s0);
+    const ht = 0.055 * Math.pow(1 - v, 0.6) + 0.006;
+    return [0.5 - (s0 + 0.03 * u), pr.c - pr.h * 0.86 - ht * u, 0, 0, 0, 1];
+  }, 1);
+  // pectorals
+  for (const sd of [1, -1]) {
+    finGrid(9, 12, (u, v) => {
+      const s0 = 0.155 + 0.05 * v; const pr = koiProfile(s0);
+      const by = pr.c - 0.62 * pr.h, bz = sd * pr.w * 0.78;
+      const ang = lerp(0.95, 0.25, v);
+      const len = 0.155 * (0.62 + 0.38 * Math.sin(Math.PI * Math.min(v * 1.1, 1)));
+      const dx = -Math.cos(ang) * 0.85, dz = sd * Math.sin(ang), dy = -0.32;
+      const l = Math.hypot(dx, dy, dz);
+      const x = 0.5 - s0 + dx / l * len * u, y = by + dy / l * len * u, z = bz + dz / l * len * u;
+      return [x, y, z, 0, 1, 0];
+    }, 2);
+  }
+  // pelvics
+  for (const sd of [1, -1]) {
+    finGrid(6, 8, (u, v) => {
+      const s0 = 0.44 + 0.035 * v; const pr = koiProfile(s0);
+      const by = pr.c - 0.9 * pr.h, bz = sd * pr.w * 0.32;
+      const ang = lerp(0.7, 0.2, v); const len = 0.085 * (0.7 + 0.3 * Math.sin(Math.PI * v));
+      const dx = -Math.cos(ang), dz = sd * Math.sin(ang) * 0.8, dy = -0.45; const l = Math.hypot(dx, dy, dz);
+      return [0.5 - s0 + dx / l * len * u, by + dy / l * len * u, bz + dz / l * len * u, 0, 1, 0];
+    }, 1);
+  }
+  const finGeo = new THREE.BufferGeometry();
+  finGeo.setAttribute('position', new THREE.Float32BufferAttribute(F.pos, 3));
+  finGeo.setAttribute('normal', new THREE.Float32BufferAttribute(F.nor, 3));
+  finGeo.setAttribute('aS', new THREE.Float32BufferAttribute(F.s, 1));
+  finGeo.setAttribute('aPart', new THREE.Float32BufferAttribute(F.part, 1));
+  finGeo.setAttribute('aFin', new THREE.Float32BufferAttribute(F.fin, 2));
+  finGeo.setAttribute('aBody', new THREE.Float32BufferAttribute(new Float32Array(F.s.length * 4), 4));
+  finGeo.setIndex(F.idx);
+  finGeo.computeVertexNormals();
+  return { bodyGeo, finGeo };
+}
+const KOI_VS = /* glsl */`
+${GL_COMMON}
+attribute float aS; attribute float aPart; attribute vec2 aFin; attribute vec4 aBody;
+uniform float uPhase; uniform float uAmp; uniform float uBend; uniform float uPaddle;
+varying vec3 vW; varying vec3 vN; varying vec3 vRest; varying vec3 vRestN; varying float vS; varying float vPart; varying vec2 vFin; varying vec4 vBody;
+float latAt(float s){
+  float A = uAmp * (0.035 + 0.965 * pow(smoothstep(0.1, 1.0, s), 1.5));
+  float sb = s - 0.22;
+  return A * sin(uPhase - 5.9 * s) + 0.5 * uBend * sb * abs(sb);
+}
+void main(){
+  vec3 p = position; vec3 n = normal;
+  float s = aS;
+  float lat = latAt(s);
+  float e = 0.004;
+  float sl = -(latAt(s + e) - latAt(s - e)) / (2.0 * e);
+  float nrm = inversesqrt(1.0 + sl * sl);
+  float z = p.z;
+  if (aPart > 4.5) lat += aFin.x * 0.22 * uAmp * sin(uPhase - 5.9 * s - 1.1);
+  p = vec3(p.x - sl * z * nrm, p.y, lat + z * nrm);
+  n = vec3(n.x - sl * n.z, n.y, sl * n.x + n.z) * nrm;
+  if (aPart > 1.5 && aPart < 2.5) p.y += aFin.x * aFin.x * uPaddle * 0.04;
+  if (aPart > 0.5 && aPart < 1.5 && position.y < 0.0) p.z += aFin.x * 0.012 * sin(uPhase * 0.7 + aFin.y * 3.0);
+  vec3 w = (modelMatrix * vec4(p, 1.0)).xyz;
+  vW = w; vN = normalize(mat3(modelMatrix) * n);
+  vRest = position; vRestN = normal; vS = s; vPart = aPart; vFin = aFin; vBody = aBody;
+  gl_Position = projectionMatrix * viewMatrix * vec4(apparentPos(w), 1.0);
+}`;
+const KOI_PATTERN = /* glsl */`
+uniform float uVariety; uniform float uSeed; uniform int uSelf;
+const vec3 SHIRO = vec3(0.90, 0.89, 0.85);
+const vec3 HI = vec3(0.80, 0.085, 0.022);
+const vec3 SUMI = vec3(0.022, 0.022, 0.026);
+// returns albedo; m.x = metallic, m.y = scale-net strength, m.z = gloss
+vec3 koiAlbedo(float s, float dors, vec3 cyl, vec2 sc, out vec3 m){
+  float v = uVariety;
+  vec3 q = cyl + vec3(uSeed * 13.7, uSeed * 3.1, uSeed * 7.9);
+  vec3 col = SHIRO; m = vec3(0.0, 0.15, 0.55);
+  float belly = smoothstep(-0.2, -0.75, dors);
+  float headBias = 0.16 * smoothstep(0.17, 0.06, s) * smoothstep(-0.1, 0.5, dors) * smoothstep(0.02, 0.05, s);
+  float n = fbm3(q * 1.7);
+  float red = smoothstep(0.508, 0.53, n + 0.20 * dors - 0.05 + headBias) * smoothstep(-0.6, -0.3, dors) * smoothstep(0.84, 0.76, s) * smoothstep(0.015, 0.04, s);
+  if (v < 0.5) { // kohaku
+    col = mix(SHIRO, HI, red);
+  } else if (v < 1.5) { // taisho sanke
+    col = mix(SHIRO, HI, red);
+    float nb = fbm3(q * 3.4 + 21.0);
+    float sumi = smoothstep(0.595, 0.615, nb) * smoothstep(-0.1, 0.3, dors) * smoothstep(0.14, 0.2, s) * smoothstep(0.8, 0.7, s);
+    col = mix(col, SUMI, sumi);
+  } else if (v < 2.5) { // showa
+    float nb = fbm3(q * 1.5 + 9.0);
+    float blk = smoothstep(0.47, 0.49, nb + 0.07 * (1.0 - abs(dors)) + 0.1 * smoothstep(0.6, 0.85, s));
+    col = mix(SHIRO, HI, red * 1.0);
+    col = mix(col, SUMI, blk * (1.0 - 0.4 * belly));
+  } else if (v < 3.5) { // yamabuki ogon
+    col = mix(vec3(1.0, 0.70, 0.13), vec3(0.95, 0.80, 0.40), belly * 0.6);
+    m = vec3(0.85, 0.22, 0.85);
+  } else if (v < 4.5) { // platinum ogon
+    col = mix(vec3(0.86, 0.86, 0.83), vec3(0.95, 0.94, 0.90), belly);
+    m = vec3(0.8, 0.18, 0.85);
+  } else if (v < 5.5) { // asagi
+    vec3 blue = mix(vec3(0.22, 0.32, 0.45), vec3(0.42, 0.52, 0.62), smoothstep(0.3, 1.0, dors));
+    float hiSide = smoothstep(0.05, -0.45, dors) + smoothstep(0.13, 0.06, s) * smoothstep(0.5, -0.1, dors);
+    col = mix(blue, vec3(0.86, 0.33, 0.08), sat(hiSide));
+    col = mix(col, vec3(0.86, 0.85, 0.80), belly * 0.55);
+    m = vec3(0.0, 0.85, 0.5);
+  } else if (v < 6.5) { // tancho
+    float d = length(vec2(s - 0.095, (1.0 - dors) * 0.075));
+    col = mix(SHIRO, HI, 1.0 - smoothstep(0.034, 0.039, d));
+  } else { // chagoi
+    col = mix(vec3(0.40, 0.26, 0.14), vec3(0.62, 0.50, 0.33), belly);
+    col *= 0.9 + 0.2 * fbm3(q * 4.0);
+    m = vec3(0.15, 0.8, 0.6);
+  }
+  // all koi: paler belly, pinkish gill area
+  col = mix(col, col * 0.7 + vec3(0.25, 0.24, 0.22), belly * 0.35);
+  col = mix(col, col * vec3(1.08, 0.86, 0.86), smoothstep(0.1, 0.16, s) * smoothstep(0.2, 0.16, s) * 0.4);
+  return col;
+}`;
+const koiBodyMat = (def, i) => smat(KOI_VS, /* glsl */`
+${GL_COMMON}
+${GL_BUMP}
+${GL_UNDER}
+${KOI_PATTERN}
+varying vec3 vW; varying vec3 vN; varying vec3 vRest; varying vec3 vRestN; varying float vS; varying float vPart; varying vec2 vFin; varying vec4 vBody;
+void main(){
+  vec3 N = normalize(vN);
+  vec3 V = normalize(uCamPos - vW);
+  float s = vS;
+  vec3 m; vec3 alb; float h = 0.0;
+  float rough = 0.32; float spk = 0.5;
+  if (vPart < 0.5) {
+    float dors = vBody.x;
+    vec3 cyl = vec3(s * 5.5, vBody.x * 0.9, vBody.y * 0.9);
+    alb = koiAlbedo(s, dors, cyl, vBody.zw, m);
+    // scales (fish-scale arcs facing the tail)
+    vec2 sc = vBody.zw + vec2(0.0, 0.18 * sin(vBody.z * 0.21 + uSeed * 5.0));
+    float row = floor(sc.x);
+    vec2 cell = vec2(fract(sc.x), fract(sc.y + 0.5 * mod(row, 2.0)));
+    float rr2 = length((cell - vec2(0.0, 0.5)) * vec2(1.0, 1.05));
+    float edge = smoothstep(0.80, 0.92, rr2) * (1.0 - smoothstep(0.96, 1.08, rr2));
+    float inner = 1.0 - smoothstep(0.2, 0.95, rr2);
+    float headMask = smoothstep(0.15, 0.2, s) * smoothstep(0.84, 0.8, s);
+    h = (inner * 0.0006 - edge * 0.0003) * headMask;
+    float net = m.y * headMask;
+    alb *= 1.0 - net * 0.32 * edge * (0.7 + 0.6 * hash12(floor(sc) + uSeed));
+    alb = mix(alb, alb * 1.25 + vec3(0.04), net * 0.3 * inner * step(0.6, m.x));
+    // gill cover line
+    float gill = exp(-pow((s - (0.152 + 0.025 * dors * dors)) / 0.0035, 2.0)) * smoothstep(0.85, 0.3, abs(dors));
+    alb *= 1.0 - 0.3 * gill;
+    // mouth
+    alb = mix(alb, vec3(0.45, 0.22, 0.2), smoothstep(0.012, 0.0, s) * 0.5);
+    rough = mix(0.30, 0.16, m.x);
+    spk = mix(0.4, 1.4, m.x);
+    // ginrin sparkle
+    float spark = step(0.93, hash12(floor(sc) + uSeed * 10.0)) * headMask * smoothstep(-0.2, 0.4, dors);
+    spk += spark * 2.0 * (0.3 + m.x);
+  } else if (vPart < 3.5) {
+    // eye
+    float out2 = vFin.y * vBody.y;
+    vec3 en = normalize(vRestN);
+    float side = en.z * vBody.y;
+    float iris = smoothstep(0.55, 0.62, side);
+    float pupil = smoothstep(0.86, 0.9, side);
+    alb = mix(vec3(0.7, 0.66, 0.6), vec3(0.42, 0.33, 0.14), iris);
+    alb = mix(alb, vec3(0.01), pupil);
+    rough = 0.06; spk = 3.0; m = vec3(0.0);
+  } else {
+    alb = (uVariety > 1.5 && uVariety < 2.5) ? vec3(0.15, 0.12, 0.12) : vec3(0.82, 0.70, 0.66);
+    m = vec3(0.0);
+  }
+  N = bumpN(N, vW, h * 0.6);
+  vec3 sunPart;
+  vec3 light = underLight(vW, N, 1.0, uSelf, sunPart);
+  vec3 col = alb * light;
+  vec3 Ls = -sunInWater();
+  vec3 Hh = normalize(Ls + V);
+  float sp = ggx(max(dot(N, Hh), 0.0), rough) * 0.25;
+  vec3 specTint = mix(vec3(1.0), alb * 1.4, m.x);
+  col += sunPart * sp * spk * 0.06 * specTint;
+  // metallic koi reflect the bright window above
+  vec3 Rv = reflect(-V, N);
+  float upw = sat(Rv.y);
+  vec3 envUp = mix(uSkyHor, uSkyTop, 0.6) * exp(-(uSigA + uSigS) * max(-vW.y, 0.0) * 1.2) * smoothstep(0.1, 0.9, upw);
+  col += envUp * alb * m.x * 0.9 * (0.4 + 0.6 * pow(1.0 - max(dot(N, V), 0.0), 2.0));
+  // subtle rim of sky light on the back (wet skin)
+  col += mix(uSkyHor, uSkyTop, 0.5) * pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.12 * exp(-(uSigA + uSigS) * max(-vW.y, 0.0));
+  gl_FragColor = vec4(viewThroughWater(col, vW), 1.0);
+}`, { uPhase: { value: 0 }, uAmp: { value: 0.06 }, uBend: { value: 0 }, uPaddle: { value: 0 }, uVariety: { value: def.v }, uSeed: { value: i * 0.618 + 0.37 }, uSelf: { value: i } });
+const koiFinMat = (def, i) => smat(KOI_VS, /* glsl */`
+${GL_COMMON}
+${GL_UNDER}
+uniform float uVariety; uniform float uSeed; uniform int uSelf;
+varying vec3 vW; varying vec3 vN; varying vec3 vRest; varying vec3 vRestN; varying float vS; varying float vPart; varying vec2 vFin; varying vec4 vBody;
+void main(){
+  vec3 N = normalize(vN); if (!gl_FrontFacing) N = -N;
+  float u = vFin.x, v = vFin.y;
+  float rays = 0.5 + 0.5 * cos(v * PI * (vPart > 4.5 ? 36.0 : 22.0));
+  vec3 alb = vec3(0.92, 0.92, 0.90);
+  float a = mix(0.82, 0.38, pow(u, 0.8));
+  float met = 0.0;
+  float vv = uVariety;
+  if (vv > 0.5 && vv < 1.5) { alb = mix(alb, vec3(0.03), step(0.62, fract(v * 4.0 + u * 0.5)) * smoothstep(0.75, 0.3, u) * 0.85); }
+  else if (vv > 1.5 && vv < 2.5) { alb = mix(alb, vec3(0.025), smoothstep(0.45, 0.25, u) * (vPart > 1.5 && vPart < 2.5 ? 1.0 : 0.6)); }
+  else if (vv > 2.5 && vv < 3.5) { alb = vec3(1.0, 0.72, 0.18); met = 1.0; a += 0.1; }
+  else if (vv > 3.5 && vv < 4.5) { alb = vec3(0.92, 0.92, 0.88); met = 1.0; a += 0.08; }
+  else if (vv > 4.5 && vv < 5.5) { alb = mix(vec3(0.85, 0.35, 0.10), vec3(0.85, 0.7, 0.6), u); }
+  else if (vv > 6.5) { alb = vec3(0.45, 0.32, 0.20); a += 0.08; }
+  alb *= 0.86 + 0.14 * rays;
+  a *= 0.88 + 0.12 * rays;
+  vec3 sunPart;
+  vec3 light = underLight(vW, N, 1.0, uSelf, sunPart);
+  vec3 Ls = -sunInWater();
+  float back = sat(-dot(N, Ls)) * 0.6;
+  vec3 col = alb * (light + sunPart * back * 0.6);
+  vec3 V = normalize(uCamPos - vW);
+  col += sunPart * ggx(max(dot(N, normalize(Ls + V)), 0.0), 0.25) * 0.02 * (1.0 + 2.0 * met);
+  gl_FragColor = vec4(viewThroughWater(col, vW), a);
+}`, { uPhase: { value: 0 }, uAmp: { value: 0.06 }, uBend: { value: 0 }, uPaddle: { value: 0 }, uVariety: { value: def.v }, uSeed: { value: i * 0.618 + 0.37 }, uSelf: { value: i } },
+{ transparent: true, depthWrite: false, side: THREE.DoubleSide });
+const { bodyGeo: KOI_BODY, finGeo: KOI_FIN } = buildKoi();
+const koiSpawn = [];
+const koi = KOI_DEF.map((def, i) => {
+  const bm = koiBodyMat(def, i), fm = koiFinMat(def, i);
+  // share animation uniforms between body and fins
+  for (const k of ['uPhase', 'uAmp', 'uBend', 'uPaddle']) fm.uniforms[k] = bm.uniforms[k];
+  const body = new THREE.Mesh(KOI_BODY, bm), fins = new THREE.Mesh(KOI_FIN, fm);
+  body.frustumCulled = fins.frustumCulled = false;
+  fins.renderOrder = 2;
+  onLayers(body, LAYER.REFR); onLayers(fins, LAYER.REFR);
+  scene.add(body); scene.add(fins);
+  let x, z;
+  for (let t = 0; t < 400; t++) { x = rr(-3.4, 5.2); z = rr(-2.5, 2.4); if (pondSDF(x, z) < -0.9 && !koiSpawn.some(([sx, sz]) => Math.hypot(sx - x, sz - z) < 1.0)) break; }
+  koiSpawn.push([x, z]);
+  return { i, L: def.L, v: def.v, body, fins, u: bm.uniforms, pos: V3(x, rr(-0.42, -0.2), z), yaw: rr(0, TAU), speed: rr(0.06, 0.14), yawRate: 0,
+    phase: rr(0, 10), wt: rr(0, 100), bend: 0, amp: 0.06, pitch: 0, vy: 0, depthGoal: rr(-0.4, -0.18), lazy: rnd() < 0.3 ? 1 : 0, lazyT: rr(3, 12),
+    target: null, full: 0, wakeT: 0, paddle: 0 };
+});
+G.uKoiN.value = koi.length;
+
+// ================================================================= frog (SDF raymarched)
+const FROG_GLSL = /* glsl */`
+uniform mat4 uFrogInv; uniform mat4 uFrogMat;
+uniform vec3 uBoxMin; uniform vec3 uBoxMax;
+uniform vec3 uBodyO; uniform float uPitch; uniform float uThroat; uniform float uBreath; uniform float uBlink; uniform float uSac; uniform float uSeedF;
+uniform float uMouth;
+uniform vec3 uJ[14]; uniform vec3 uToe[10]; uniform vec3 uFing[8]; uniform vec4 uLimbB[4];
+uniform int uSteps; uniform mat4 uProjM;
+float sdEll(vec3 p, vec3 r){ float k0 = length(p / r); float k1 = length(p / (r * r)); return k0 * (k0 - 1.0) / k1; }
+float sdRC(vec3 p, vec3 a, vec3 b, float r1, float r2){
+  vec3 ba = b - a; float l2 = dot(ba, ba); float rr = r1 - r2; float a2 = l2 - rr * rr; float il2 = 1.0 / l2;
+  vec3 pa = p - a; float y = dot(pa, ba); float z = y - l2;
+  vec3 xv = pa * l2 - ba * y; float x2 = dot(xv, xv); float y2 = y * y * l2; float z2 = z * z * l2;
+  float k = sign(rr) * rr * rr * x2;
+  if (sign(z) * a2 * z2 > k) return sqrt(x2 + z2) * il2 - r2;
+  if (sign(y) * a2 * y2 < k) return sqrt(x2 + y2) * il2 - r1;
+  return (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1;
+}
+float sdCap(vec3 p, vec3 a, vec3 b, float r){ vec3 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h) - r; }
+float dot2(vec3 v){ return dot(v, v); }
+float udTri(vec3 p, vec3 a, vec3 b, vec3 c){
+  vec3 ba = b - a; vec3 pa = p - a; vec3 cb = c - b; vec3 pb = p - b; vec3 ac = a - c; vec3 pc = p - c;
+  vec3 nor = cross(ba, ac);
+  return sqrt((sign(dot(cross(ba, nor), pa)) + sign(dot(cross(cb, nor), pb)) + sign(dot(cross(ac, nor), pc)) < 2.0)
+    ? min(min(dot2(ba * clamp(dot(ba, pa) / dot2(ba), 0.0, 1.0) - pa), dot2(cb * clamp(dot(cb, pb) / dot2(cb), 0.0, 1.0) - pb)), dot2(ac * clamp(dot(ac, pc) / dot2(ac), 0.0, 1.0) - pc))
+    : dot(nor, pa) * dot(nor, pa) / dot2(nor));
+}
+float smin(float a, float b, float k){ float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
+vec3 toBody(vec3 p){ vec3 q = p - uBodyO; float c = cos(uPitch), s = sin(uPitch); return vec3(c * q.x + s * q.y, -s * q.x + c * q.y, q.z); }
+vec3 bodyToLocalDir(vec3 d){ float c = cos(uPitch), s = sin(uPitch); return vec3(c * d.x - s * d.y, s * d.x + c * d.y, d.z); }
+// Japanese tree frog (Dryophytes japonicus): broad short head, big lateral eyes, plump body, slender limbs with toe discs
+const vec3 EYE_C = vec3(0.0395, 0.0128, 0.0160);
+const float EYE_R = 0.0079;
+const vec2 HEAD_PIV = vec2(0.018, 0.004);
+const float HEAD_ROT = 0.16;
+vec3 toHead(vec3 q){ vec2 r = q.xy - HEAD_PIV; float c = cos(HEAD_ROT), s = sin(HEAD_ROT); return vec3(vec2(c * r.x - s * r.y, s * r.x + c * r.y) + HEAD_PIV, q.z); }
+// eye frame (head space, +z side): EYE_AX through the iris centre, EYE_TX forward, EYE_TY up
+const vec3 EYE_AX = vec3(0.28066, 0.40094, 0.87205);
+const vec3 EYE_TX = vec3(0.95981, -0.11724, -0.25500);
+const vec3 EYE_TY = vec3(0.0, 0.90857, -0.41773);
+const float LID_T = 0.0009;
+// blinking pulls the eyeball down into the head while the lids close over it
+vec3 eyeC(){ return EYE_C - vec3(0.0, 0.0030 * uBlink, 0.0); }
+float smaxF(float a, float b, float k){ return -smin(-a, -b, k); }
+// the gap between the lids on the unit eye sphere (< 0 inside it): an almond around the iris;
+// on a blink the lower lid (nictitating membrane) sweeps up and the upper lid drops a little until it is shut
+float lidOpen(vec3 n, float bl){
+  float a = dot(n, EYE_TX), b = dot(n, EYE_TY), c = dot(n, EYE_AX);
+  float ell = (length(vec2(a / 0.84, b / 0.76)) - 1.0) * 0.76;
+  return max(max(ell, max(b - mix(0.70, 0.50, bl), mix(-0.72, 0.80, bl) - b)), 0.25 - c);
+}
+// thin skin shell over the eyeball everywhere except the gap between the lids
+float sdLid(vec3 qha){
+  vec3 e = qha - eyeC(); float r = length(e);
+  float shell = abs(r - (EYE_R + LID_T * 0.5)) - LID_T * 0.5;
+  return smaxF(shell, -lidOpen(e / max(r, 1e-6), uBlink) * EYE_R, 0.0005);
+}
+const vec3 SAC_C = vec3(0.0335, -0.0088, 0.0);
+float sdSac(vec3 qh){ vec3 c = SAC_C + vec3(0.0025 * uSac, -0.0060 * uSac, 0.0); return length((qh - c) / vec3(1.0, 0.86, 1.04)) * 0.86 - (0.0030 + 0.0118 * uSac); }
+float sdBodyRaw(vec3 q){
+  float b = uBreath;
+  // plump, rounded torso
+  float d = sdEll(q - vec3(-0.004, 0.0, 0.0), vec3(0.0345, 0.0182 + 0.0009 * b, 0.0235 + 0.0011 * b));
+  d = smin(d, sdEll(q - vec3(-0.027, 0.0006, 0.0), vec3(0.0165, 0.0142, 0.0170)), 0.011);
+  d = smin(d, sdEll(q - vec3(0.016, 0.0002, 0.0), vec3(0.0200, 0.0166, 0.0242)), 0.010);
+  // head: broad and short with a rounded snout
+  vec3 qh = toHead(q); vec3 qha = vec3(qh.x, qh.y, abs(qh.z));
+  vec3 h = qh - vec3(0.037, 0.0042, 0.0);
+  float tz = 1.0 - 0.36 * smoothstep(-0.004, 0.021, h.x);
+  float ty = 1.0 - 0.30 * smoothstep(0.000, 0.021, h.x);
+  d = smin(d, sdEll(h, vec3(0.0218, 0.0127 * ty, 0.0246 * tz)), 0.010);
+  // lower jaw / throat (buccal pumping)
+  vec3 t = qh - vec3(0.033, -0.0060, 0.0);
+  d = smin(d, sdEll(t, vec3(0.0195, 0.0060 + 0.0022 * uThroat, 0.0185 + 0.0006 * uThroat)), 0.006);
+  // vocal sac (males inflate it to call)
+  if (uSac > 0.01) d = smin(d, sdSac(qh), 0.004);
+  // big bulging eyes, wrapped in their lids
+  d = smin(d, length(qha - eyeC()) - EYE_R, 0.0024);
+  d = smin(d, sdLid(qha), 0.0010);
+  // small tympanum behind the eye
+  d += 0.00028 * (1.0 - smoothstep(0.0018, 0.0030, length(qha - vec3(0.0272, 0.0060, 0.0200))));
+  // mouth groove
+  float lipY = -0.0012 - 0.0026 * smoothstep(0.060, 0.026, qh.x);
+  d += 0.00040 * exp(-pow((qh.y - lipY) / 0.0006, 2.0)) * smoothstep(0.022, 0.028, qh.x) * smoothstep(0.004, 0.010, qha.z);
+  // nostrils
+  d += 0.00028 * (1.0 - smoothstep(0.0, 0.0009, length(qha - vec3(0.0560, 0.0072, 0.0046))));
+  return d;
+}
+// the mouth (only opened to feed): the lower jaw drops about its hinge at the corner of the mouth; everything below
+// the lip line in front of the hinge swings down with it, and the opening closes smoothly towards the hinge
+const vec2 JAW_H = vec2(0.0235, -0.0036);
+const vec2 JAW_N = vec2(-0.0665, 0.9978);
+vec3 fromHead(vec3 qh){ vec2 r = qh.xy - HEAD_PIV; float c = cos(HEAD_ROT), s = sin(HEAD_ROT); return vec3(vec2(c * r.x + s * r.y, -s * r.x + c * r.y) + HEAD_PIV, qh.z); }
+vec3 jawWarp(vec3 qh){
+  float a = uMouth * 0.30 * smoothstep(JAW_H.x - 0.002, JAW_H.x + 0.012, qh.x);
+  vec2 r = qh.xy - JAW_H; float c = cos(a), s = sin(a);
+  return vec3(vec2(c * r.x - s * r.y, s * r.x + c * r.y) + JAW_H, qh.z);
+}
+float sdBody(vec3 q){
+  if (uMouth < 0.002) return sdBodyRaw(q);
+  vec3 qh = toHead(q);
+  float up = max(sdBodyRaw(q), -dot(qh.xy - JAW_H, JAW_N));
+  vec3 qj = jawWarp(qh);
+  float lo = max(sdBodyRaw(fromHead(qj)), dot(qj.xy - JAW_H, JAW_N));
+  return min(up, lo) * 0.85;
+}
+// on the cut faces exposed by the open jaw: the roof and the floor of the mouth
+float inMouth(vec3 q, vec3 qh){
+  if (uMouth < 0.002) return 0.0;
+  vec3 qj = jawWarp(qh);
+  float s1 = dot(qh.xy - JAW_H, JAW_N), s2 = dot(qj.xy - JAW_H, JAW_N);
+  return ((abs(s1) < 0.0006 && sdBodyRaw(q) < -0.00015) || (abs(s2) < 0.0006 && sdBodyRaw(fromHead(qj)) < -0.00015)) ? 1.0 : 0.0;
+}
+float hindLeg(vec3 p, int sd){
+  int o = sd * 4;
+  vec3 H = uJ[o], K = uJ[o + 1], A = uJ[o + 2], M = uJ[o + 3];
+  float d = sdRC(p, H, K, 0.0066, 0.0042);
+  d = smin(d, sdRC(p, mix(H, K, 0.10), mix(H, K, 0.60), 0.0074, 0.0052), 0.0035);
+  d = smin(d, sdRC(p, K, A, 0.0042, 0.0026), 0.0030);
+  d = smin(d, sdRC(p, mix(K, A, 0.10), mix(K, A, 0.50), 0.0046, 0.0034), 0.0025);
+  d = smin(d, sdRC(p, A, M, 0.0026, 0.0019), 0.0025);
+  float t = 1e5;
+  for (int i = 0; i < 5; i++){
+    vec3 tip = uToe[sd * 5 + i];
+    t = min(t, sdRC(p, M, tip, 0.0013, 0.00085));
+    t = smin(t, sdEll(p - tip, vec3(0.0021, 0.0013, 0.0021)), 0.0008);
+  }
+  for (int i = 0; i < 4; i++) t = min(t, udTri(p, M, mix(M, uToe[sd * 5 + i], 0.42), mix(M, uToe[sd * 5 + i + 1], 0.42)) - 0.00035);
+  return smin(d, t, 0.0018);
+}
+float foreLeg(vec3 p, int sd){
+  int o = 8 + sd * 3;
+  vec3 S = uJ[o], E = uJ[o + 1], W = uJ[o + 2];
+  float d = sdRC(p, S, E, 0.0036, 0.0030);
+  d = smin(d, sdRC(p, E, W, 0.0032, 0.0021), 0.0025);
+  float f = 1e5;
+  for (int i = 0; i < 4; i++){
+    vec3 tip = uFing[sd * 4 + i];
+    f = min(f, sdRC(p, W, tip, 0.0012, 0.0008));
+    f = smin(f, sdEll(p - tip, vec3(0.0019, 0.0012, 0.0019)), 0.0007);
+  }
+  return smin(d, f, 0.0015);
+}
+float frogMap(vec3 p){
+  float d = sdBody(toBody(p));
+  for (int i = 0; i < 2; i++){
+    vec4 b = uLimbB[i]; if (length(p - b.xyz) - b.w < d + 0.006) d = smin(d, hindLeg(p, i), 0.0045);
+    vec4 c = uLimbB[2 + i]; if (length(p - c.xyz) - c.w < d + 0.005) d = smin(d, foreLeg(p, i), 0.0032);
+  }
+  return d;
+}
+`;
+const FROG_VS = /* glsl */`
+varying vec3 vW;
+void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`;
+const FROG_FS = /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+${GL_UNDER}
+${FROG_GLSL}
+uniform float uMale; uniform float uWaterY; uniform float uClipOn; uniform float uSwim; uniform float uGreen;
+varying vec3 vW;
+vec2 boxHit(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax){
+  vec3 inv = 1.0 / rd; vec3 t0 = (bmin - ro) * inv, t1 = (bmax - ro) * inv;
+  vec3 tmin = min(t0, t1), tmax = max(t0, t1);
+  return vec2(max(max(tmin.x, tmin.y), tmin.z), min(min(tmax.x, tmax.y), tmax.z));
+}
+vec3 frogNormal(vec3 p){
+  const vec2 k = vec2(1.0, -1.0); float h = 0.00011;
+  return normalize(k.xyy * frogMap(p + k.xyy * h) + k.yyx * frogMap(p + k.yyx * h) + k.yxy * frogMap(p + k.yxy * h) + k.xxx * frogMap(p + k.xxx * h));
+}
+float frogShadow(vec3 ro, vec3 rd){
+  float res = 1.0; float t = 0.0015;
+  for (int i = 0; i < 28; i++){
+    float h = frogMap(ro + rd * t);
+    res = min(res, 9.0 * h / t);
+    t += clamp(h, 0.0010, 0.009);
+    if (res < 0.02 || t > 0.12) break;
+  }
+  return sat(res);
+}
+float frogAO(vec3 p, vec3 n){
+  float occ = 0.0, sca = 1.0;
+  for (int i = 0; i < 5; i++){ float h = 0.0010 + 0.0065 * float(i) / 4.0; float d = frogMap(p + h * n); occ += (h - d) * sca; sca *= 0.85; }
+  return sat(1.0 - 48.0 * occ);
+}
+float granule(vec3 q, float sc){
+  vec3 tq = q * sc; vec3 ti = floor(tq), tf = fract(tq); float td = 9.0;
+  for (int k = 0; k <= 1; k++) for (int j = 0; j <= 1; j++) for (int i = 0; i <= 1; i++){
+    vec3 g = vec3(float(i), float(j), float(k)); vec3 o = vec3(hash13(ti + g), hash13(ti + g + 3.7), hash13(ti + g + 8.1));
+    td = min(td, length(g + o - tf)); }
+  return 1.0 - smoothstep(0.0, 0.42, td);
+}
+// smooth satin back, granular belly
+float skinBump(vec3 q, float bel){
+  float sm = vnoise3(q * 1300.0) * 0.35 + vnoise3(q * 2800.0) * 0.15 + granule(q, 1500.0) * 0.22;
+  if (bel < 0.02) return sm;
+  float g = granule(q, 760.0);
+  return mix(sm, g * g * 1.2 + sm * 0.5, bel);
+}
+// golden iris with a horizontal pupil, darkening towards its rim
+vec3 eyeAlb(vec3 en){
+  vec2 e2 = vec2(dot(en, EYE_TX), dot(en, EYE_TY));
+  float pupil = 1.0 - smoothstep(0.92, 1.06, length(e2 / vec2(0.46, 0.22)));
+  float ang = atan(e2.y, e2.x);
+  float irisN = vnoise3(en * 34.0) * 0.5 + vnoise(vec2(ang * 10.0, length(e2) * 22.0)) * 0.5;
+  vec3 iris = mix(vec3(0.36, 0.22, 0.05), vec3(0.88, 0.66, 0.20), irisN);
+  iris = mix(iris, vec3(0.06, 0.04, 0.015), smoothstep(0.58, 0.86, vnoise3(en * 80.0)) * 0.65);
+  iris = mix(iris, vec3(0.04, 0.035, 0.03), smoothstep(0.12, 0.02, abs(e2.y)) * smoothstep(0.30, 0.62, abs(e2.x)) * 0.9);
+  iris = mix(iris, vec3(0.03, 0.05, 0.05), smoothstep(0.55, 0.80, length(e2)));
+  return mix(iris, vec3(0.004), pupil);
+}
+// dark lateral stripe: nostril -> eye -> tympanum -> shoulder (head space, x forward)
+float stripeY(float x){
+  if (x > 0.046) return mix(0.0098, 0.0070, (x - 0.046) / 0.010);
+  if (x > 0.032) return mix(0.0094, 0.0098, (x - 0.032) / 0.014);
+  if (x > 0.0272) return mix(0.0060, 0.0094, (x - 0.0272) / 0.0048);
+  return mix(-0.0012, 0.0060, clamp((x - 0.004) / 0.0232, 0.0, 1.0));
+}
+void main(){
+  vec3 ro = (uFrogInv * vec4(cameraPosition, 1.0)).xyz;
+  vec3 rdw = normalize(vW - cameraPosition);
+  vec3 rd = normalize((uFrogInv * vec4(rdw, 0.0)).xyz);
+  vec2 tb = boxHit(ro, rd, uBoxMin, uBoxMax);
+  if (tb.y < max(tb.x, 0.0)) discard;
+  // a frog in the water is split at the surface: the dry part is drawn normally (and mirrored),
+  // the submerged part goes into the refraction pass and is seen through the water
+  if (uClipOn > 0.5) {
+    bool wantAbove = !IS_REFR;
+    float Y = IS_REFR ? uWaterY + 0.006 : (uPass > 0.5 ? uWaterY : uWaterY - 0.004);
+    float wyd = (uFrogMat * vec4(rd, 0.0)).y;
+    if (abs(wyd) > 1e-7) {
+      float tc = (Y - cameraPosition.y) / wyd;
+      if (wantAbove == (wyd < 0.0)) tb.y = min(tb.y, tc); else tb.x = max(tb.x, tc);
+    } else if ((cameraPosition.y > Y) != wantAbove) discard;
+    if (tb.y < max(tb.x, 0.0)) discard;
+  } else if (IS_REFR) discard;
+  float t = max(tb.x, 0.0);
+  bool hit = false;
+  for (int i = 0; i < 160; i++){
+    if (i >= uSteps) break;
+    vec3 p = ro + rd * t;
+    float d = frogMap(p);
+    if (d < 0.00006 + t * 0.00035) { hit = true; break; }
+    t += d * 0.92;
+    if (t > tb.y) break;
+  }
+  if (!hit) discard;
+  vec3 p = ro + rd * t;
+  vec3 n = frogNormal(p);
+  vec3 q = toBody(p);
+  vec3 qa = vec3(q.x, q.y, abs(q.z));
+  vec3 qh = toHead(q); vec3 qha = vec3(qh.x, qh.y, abs(qh.z));
+  vec3 nb = vec3(cos(uPitch) * n.x + sin(uPitch) * n.y, -sin(uPitch) * n.x + cos(uPitch) * n.y, n.z);
+  vec3 nh = vec3(cos(HEAD_ROT) * nb.x - sin(HEAD_ROT) * nb.y, sin(HEAD_ROT) * nb.x + cos(HEAD_ROT) * nb.y, nb.z);
+  // ---- material: blue morph (no yellow pigment) Japanese tree frog
+  vec3 ev = qha - eyeC(); float er = length(ev); vec3 en = ev / max(er, 1e-6);
+  float dEye = er - EYE_R;
+  float dLid = sdLid(qha);
+  float dBody = sdBody(q);
+  float dSac = uSac > 0.02 ? sdSac(qh) : 1e5;
+  float dH = 1e5, dF = 1e5, dT = 1e5, dDisc = 1e5;
+  for (int i = 0; i < 2; i++){
+    int o = i * 4;
+    vec3 H = uJ[o], K = uJ[o + 1], A = uJ[o + 2], M = uJ[o + 3];
+    dH = min(dH, min(min(sdRC(p, H, K, 0.0074, 0.0046), sdRC(p, K, A, 0.0046, 0.0026)), sdRC(p, A, M, 0.0026, 0.0019)));
+    for (int k = 0; k < 5; k++){ vec3 tip = uToe[i * 5 + k]; dT = min(dT, sdRC(p, M, tip, 0.0013, 0.00085)); dDisc = min(dDisc, sdEll(p - tip, vec3(0.0021, 0.0013, 0.0021))); }
+    for (int k = 0; k < 4; k++) dT = min(dT, udTri(p, M, mix(M, uToe[i * 5 + k], 0.42), mix(M, uToe[i * 5 + k + 1], 0.42)) - 0.00035);
+    int f = 8 + i * 3;
+    dF = min(dF, min(sdRC(p, uJ[f], uJ[f + 1], 0.0036, 0.0030), sdRC(p, uJ[f + 1], uJ[f + 2], 0.0032, 0.0021)));
+    for (int k = 0; k < 4; k++){ vec3 tip = uFing[i * 4 + k]; dT = min(dT, sdRC(p, uJ[f + 2], tip, 0.0012, 0.0008)); dDisc = min(dDisc, sdEll(p - tip, vec3(0.0019, 0.0012, 0.0019))); }
+  }
+  dT = min(dT, dDisc);
+  vec3 alb; float rough = 0.34; float sss = 0.55; float eye = 0.0; float coatK = 0.38;
+  float mouthIn = inMouth(q, qh);
+  float hueJ = hash11(uSeedF * 17.0 + 3.0) - 0.5;
+  // the usual leaf-green tree frog, or the rare blue one that lacks the yellow pigment
+  vec3 B1 = uGreen > 0.5 ? vec3(0.11, 0.33 + 0.04 * hueJ, 0.035) : vec3(0.060, 0.36 + 0.05 * hueJ, 0.52);
+  vec3 B2 = uGreen > 0.5 ? vec3(0.27, 0.52, 0.055 + 0.02 * hueJ) : vec3(0.15, 0.53, 0.66 + 0.05 * hueJ);
+  float nn = vnoise3(q * 130.0 + uSeedF * 7.0) * 0.6 + vnoise3(q * 340.0 - uSeedF * 3.0) * 0.4;
+  vec3 skin = mix(B1, B2, nn);
+  skin = mix(skin, skin * vec3(0.72, 0.84, 0.88), smoothstep(0.52, 0.72, vnoise3(q * 75.0 + 11.0 + uSeedF)) * 0.55);
+  skin = mix(skin, uGreen > 0.5 ? vec3(0.20, 0.42, 0.05) : vec3(0.12, 0.45, 0.44), smoothstep(0.55, 0.85, vnoise3(q * 50.0 + 3.0 + uSeedF)) * 0.30);
+  float speck = smoothstep(0.82, 0.88, vnoise3(q * 820.0 + uSeedF * 13.0));
+  skin *= 1.0 - 0.45 * speck;
+  float bellyW = smoothstep(-0.28, -0.72, nb.y) * smoothstep(-0.001, -0.009, q.y);
+  vec3 bel = vec3(0.80, 0.80, 0.76) * (0.9 + 0.14 * vnoise3(q * 700.0));
+  if (mouthIn > 0.5) {
+    // inside the mouth: wet pink, darkening back towards the throat
+    alb = mix(vec3(0.26, 0.07, 0.08), vec3(0.74, 0.36, 0.37), smoothstep(0.027, 0.052, qh.x)) * (0.9 + 0.2 * vnoise3(qh * 900.0));
+    rough = 0.12; sss = 0.45; coatK = 0.9; eye = 0.0;
+  } else if (dEye < 0.0006 && dEye < dLid - 0.0002 && dEye <= dBody + 0.0009) {
+    eye = 1.0;
+    alb = eyeAlb(en);
+    rough = 0.04; sss = 0.0;
+  } else if (dLid < 0.0006 && dLid <= dBody + 0.0009 && lidOpen(en, 0.0) < -0.08 && dot(en, EYE_TY) < mix(0.70, 0.50, uBlink) - 0.04) {
+    // the lower lid drawn up over the eye: a thin translucent membrane, the iris and pupil dimly showing through,
+    // with the fine bronze net of a tree frog's nictitans
+    eye = 1.0;
+    alb = mix(eyeAlb(en), vec3(0.55, 0.60, 0.57), 0.58);
+    alb = mix(alb, vec3(0.62, 0.50, 0.26), smoothstep(0.55, 0.85, vnoise3(en * 70.0 + uSeedF)) * 0.30);
+    rough = 0.10; sss = 0.3;
+  } else if (dSac < 0.0007) {
+    float infl = uSac;
+    vec3 sacC = mix(vec3(0.40, 0.42, 0.40), vec3(0.80, 0.81, 0.77), infl);
+    float wr = 0.5 + 0.5 * sin(qh.z * 2200.0 + vnoise3(qh * 900.0) * 3.0);
+    alb = sacC * (1.0 - 0.18 * (1.0 - infl) * wr);
+    rough = mix(0.38, 0.10, infl); sss = 0.95; coatK = mix(0.3, 0.8, infl);
+  } else if (dBody <= min(min(dH, dF), dT) + 0.0004) {
+    alb = skin;
+    float flank = smoothstep(0.12, -0.42, nb.y);
+    alb = mix(alb, mix(skin, uGreen > 0.5 ? vec3(0.62, 0.70, 0.46) : vec3(0.56, 0.68, 0.70), 0.5), flank * (1.0 - bellyW));
+    alb = mix(alb, bel, bellyW);
+    float sx = qh.x;
+    float sy = stripeY(sx);
+    float hw = sx > 0.032 ? mix(0.0019, 0.0014, sat((sx - 0.032) / 0.024)) : mix(0.0009, 0.0026, sat((sx - 0.004) / 0.028));
+    float side = smoothstep(0.30, 0.62, abs(nh.z));
+    float stripe = (1.0 - smoothstep(hw * 0.7, hw * 1.3, abs(qh.y - sy))) * side * smoothstep(0.002, 0.012, sx) * smoothstep(0.060, 0.054, sx);
+    stripe *= 0.75 + 0.25 * vnoise3(q * 400.0);
+    alb = mix(alb, vec3(0.020, 0.030, 0.038), stripe);
+    float lipY = -0.0012 - 0.0026 * smoothstep(0.060, 0.026, qh.x);
+    float lipLine = smoothstep(0.0002, 0.0007, qh.y - lipY) * (1.0 - smoothstep(0.0011, 0.0019, qh.y - lipY)) * smoothstep(0.006, 0.010, qha.z) * smoothstep(0.014, 0.024, qh.x) * smoothstep(0.060, 0.050, qh.x);
+    alb = mix(alb, vec3(0.74, 0.80, 0.80), lipLine * 0.75 * (1.0 - stripe));
+    float tymp = 1.0 - smoothstep(0.0019, 0.0027, length(qha - vec3(0.0272, 0.0060, 0.0200)));
+    alb = mix(alb, vec3(0.045, 0.055, 0.06), tymp * 0.55);
+    float throatM = smoothstep(-0.40, -0.80, nh.y) * smoothstep(0.020, 0.030, qh.x) * smoothstep(0.056, 0.046, qh.x);
+    alb = mix(alb, vec3(0.40, 0.42, 0.40), throatM * 0.65 * uMale);
+    sss = 0.6;
+  } else if (dH <= min(dF, dT) + 0.0003) {
+    float top = smoothstep(-0.35, 0.45, n.y);
+    alb = mix(vec3(0.66, 0.70, 0.68), skin, top);
+    sss = 0.5;
+  } else if (dF <= dT + 0.0003) {
+    float top = smoothstep(-0.30, 0.40, n.y);
+    alb = mix(vec3(0.66, 0.70, 0.68), skin * 1.02, top);
+    sss = 0.5;
+  } else {
+    float topT = smoothstep(-0.3, 0.5, n.y);
+    alb = mix(mix(skin, vec3(0.55, 0.62, 0.62), 0.45), skin * 0.95, topT * 0.6);
+    if (dDisc < 0.0004) { alb = mix(skin, vec3(0.62, 0.64, 0.62), 0.5); rough = 0.22; }
+    sss = 0.9;
+  }
+  // skin micro-relief
+  if (eye < 0.5 && mouthIn < 0.5) {
+    float e = 0.00007;
+    float b0 = skinBump(q, bellyW);
+    vec3 gb = vec3(skinBump(q + vec3(e, 0.0, 0.0), bellyW) - b0, skinBump(q + vec3(0.0, e, 0.0), bellyW) - b0, skinBump(q + vec3(0.0, 0.0, e), bellyW) - b0) / e;
+    vec3 gl = bodyToLocalDir(gb);
+    float amt = 0.000014 + 0.000014 * bellyW;
+    n = normalize(n - amt * (gl - n * dot(gl, n)));
+  }
+  // ---- lighting (world space)
+  vec3 nW = normalize(mat3(uFrogMat) * n);
+  vec3 nW0 = nW;
+  vec3 V = -rdw;
+  vec3 Pw = (uFrogMat * vec4(p, 1.0)).xyz;
+  vec4 clip = uProjM * viewMatrix * vec4(Pw, 1.0);
+  if (IS_REFR) {
+    // submerged skin: refracted sun with caustics, sky light from above, then the water column to the eye
+    vec3 Lu = -sunInWater();
+    float shU = frogShadow(p + n * 0.0004, normalize((uFrogInv * vec4(Lu, 0.0)).xyz));
+    vec3 sp; vec3 Lt = underLight(Pw, nW, frogAO(p, n), -1, sp);
+    float ndlU = dot(nW, Lu);
+    Lt -= sp * max(ndlU, 0.0) * (1.0 - shU);
+    vec3 cu = alb * Lt + alb * vec3(1.0, 0.68, 0.58) * sp * sat((ndlU + 0.5) / 1.5) * (1.0 - sat(ndlU)) * 0.2 * sss;
+    gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+    // a little extra pond murk so the submerged half reads as being in the water
+    gl_FragColor = vec4(viewThroughWater(cu * 0.88, Pw - vec3(0.0, 0.06, 0.0)), 1.0);
+    return;
+  }
+  // wet skin straight out of the water
+  coatK = mix(coatK, 0.85, uSwim); rough *= 1.0 - 0.35 * uSwim;
+  vec3 Lloc = normalize((uFrogInv * vec4(uSunDir, 0.0)).xyz);
+  float sh = frogShadow(p + n * 0.0004, Lloc) * sunShadow((uFrogMat * vec4(p, 1.0)).xyz, nW0);
+  float ao = frogAO(p, n) * mix(mix(0.55, 1.0, smoothstep(0.0, 0.010, p.y)), 1.0, uSwim);
+  float ndl = dot(nW, uSunDir);
+  vec3 skyAmb = mix(uSkyHor, uSkyTop, 0.5 + 0.5 * nW.y) * 0.7;
+  vec3 bounce = vec3(0.10, 0.16, 0.05) * sat(-nW.y) * (uSunCol.g / 3.0);
+  vec3 col = alb * (uSunCol * sat(ndl) * sh + (skyAmb + bounce) * ao);
+  float wrap = sat((ndl + 0.5) / 1.5) * (1.0 - sat(ndl));
+  col += alb * vec3(1.0, 0.68, 0.58) * uSunCol * wrap * 0.20 * sss * (0.4 + 0.6 * sh);
+  vec3 H = normalize(uSunDir + V);
+  float NdV = max(dot(nW, V), 0.0);
+  float Fr = 0.03 + 0.97 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+  float spec = ggx(max(dot(nW, H), 0.0), rough) * Fr / (4.0 * max(NdV, 0.12));
+  float coat = ggx(max(dot(nW, H), 0.0), 0.10) * Fr / (4.0 * max(NdV, 0.12));
+  col += uSunCol * (spec * 0.5 + coat * (eye > 0.5 ? 1.2 : coatK)) * sat(ndl) * sh;
+  float Fv = 0.03 + 0.97 * pow(1.0 - NdV, 5.0);
+  col += skyColor(reflect(-V, nW), 0.0) * (Fv * 0.85 + 0.03) * (eye > 0.5 ? 1.0 : 0.75) * ao;
+  gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+  gl_FragColor = vec4(fogLand(col, Pw), 1.0);
+}`;
+function makeFrogMesh(seed, male, green) {
+  const mat = smat(FROG_VS, FROG_FS, {
+    uFrogInv: { value: new THREE.Matrix4() }, uFrogMat: { value: new THREE.Matrix4() },
+    uBoxMin: { value: V3() }, uBoxMax: { value: V3() }, uBodyO: { value: V3() }, uPitch: { value: 0 },
+    uThroat: { value: 0 }, uBreath: { value: 0 }, uBlink: { value: 0 }, uSac: { value: 0 }, uSeedF: { value: seed }, uMale: { value: male ? 1 : 0 }, uGreen: { value: green ? 1 : 0 },
+    uJ: { value: Array.from({ length: 14 }, () => V3()) }, uToe: { value: Array.from({ length: 10 }, () => V3()) },
+    uFing: { value: Array.from({ length: 8 }, () => V3()) }, uLimbB: { value: Array.from({ length: 4 }, () => new THREE.Vector4()) },
+    uSteps: { value: Q.steps }, uProjM: { value: new THREE.Matrix4() },
+    uWaterY: { value: 0 }, uClipOn: { value: 0 }, uSwim: { value: 0 }, uMouth: { value: 0 },
+  }, { side: THREE.BackSide });
+  const box = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+  box.matrixAutoUpdate = false; box.frustumCulled = false;
+  onLayers(box, LAYER.MAIN, LAYER.REFL); scene.add(box);
+  box.onBeforeRender = (r, sc, cam) => { mat.uniforms.uProjM.value.copy(cam.projectionMatrix); };
+  return { mat, box };
+}
+
+// tree frog proportions in model units (one model unit = FROG_SCALE metres)
+const FROG_SCALE = 0.62;
+const SIT = {
+  bodyO: [0.0, 0.0192, 0], pitch: 0.34,
+  H: [-0.026, 0.012, 0.012], K: [0.010, 0.010, 0.028], A: [-0.024, 0.0055, 0.031], M: [-0.004, 0.0025, 0.035],
+  toeAz: [-0.25, 0.0, 0.22, 0.46, 0.82], toeLen: [0.0070, 0.0098, 0.0135, 0.0175, 0.0128],
+  S: [0.020, 0.0165, 0.0150], E: [0.012, 0.0085, 0.0240], W: [0.030, 0.0030, 0.0175],
+  fingAz: [-0.58, -0.16, 0.20, 0.56], fingLen: [0.0058, 0.0078, 0.0088, 0.0072],
+};
+const EXT = {
+  K: [-0.062, 0.012, 0.024], A: [-0.100, 0.006, 0.027], M: [-0.124, 0.003, 0.028],
+  E: [0.034, 0.016, 0.026], W: [0.050, 0.012, 0.022],
+};
+const frogs = [0, 1, 2, 3, 4].map((i) => {
+  const male = i !== 1 && i !== 3;
+  const { mat, box } = makeFrogMesh(i * 0.37 + 0.11, male, i < 2);   // the first two are ordinary green ones
+  return {
+    i, mat, box, male, size: [1.0, 1.5, 1.07, 2.0, 1.03][i],   // two big females: the second is half again the size of the rest, the fourth twice
+    pad: -1, lx: 0, lz: 0, yaw: 0, state: 'sit', t: 0, next: [6.5, 11, 15.5, 8.5, 13][i], jump: null, jumpTo: -1, k: 0, kf: 0, crouch: 0,
+    breath: 0, throat: 0, blink: 0, blinkT: 1.5 + i * 1.3, blinkStart: undefined, pitchJ: 0, pos: V3(), world: new THREE.Matrix4(),
+    sac: 0, callT: 3.5 + i * 5.5, callN: 0, callPh: 0, breathW: [1.6, 1.85, 1.45, 1.7, 1.55][i], throatW: [9.0, 8.2, 9.6, 8.6, 9.3][i], turn: 0, swimIn: 14 + i * 7 + rnd() * 10, diving: false, swim: null, swimPlan: null, inWater: false,
+    sw: 0, sk: 0, swPitch: 0, arm: 0, spread: 0.1,
+    // feeding
+    prey: null, huntT: 0, huntCool: 0, approachCool: 0, fullT: 4 + i * 3, tongue: null, swallow: 0, gulped: false, mouth: 0, wipe: 0, wipePh: 0, wipeSide: 1,
+    hunt: null, chase: null, chaseT: 0, chaseCool: 0, edgeCool: 0, mouthW: V3(), bodyO: [0, 0.0192, 0], pitchB: 0.34,
+  };
+});
+let focusIdx = 0;
+let frog = frogs[0];
+const tmpM = new THREE.Matrix4(), tmpM2 = new THREE.Matrix4(), tmpV = V3();
+function vlerp(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+function chain(base, pts, lens) {
+  const out = [base]; let prev = base;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i]; let dx = p[0] - prev[0], dy = p[1] - prev[1], dz = p[2] - prev[2];
+    const l = Math.hypot(dx, dy, dz) || 1; const k = lens[i] / l;
+    prev = [prev[0] + dx * k, prev[1] + dy * k, prev[2] + dz * k]; out.push(prev);
+  }
+  return out;
+}
+const LEN_H = [0.040, 0.040, 0.024], LEN_F = [0.0112, 0.0170];
+// swimming posture: body nearly level with the head tipped up so eyes and nostrils stay above the surface
+const SWIM_PITCH = 0.17;
+const SWIM_FLOAT = 0.0295;   // model-space height of the waterline on a floating frog
+function rotXY(a, o, ang) { const c = Math.cos(ang), s = Math.sin(ang), x = a[0] - o[0], y = a[1] - o[1]; return [o[0] + c * x - s * y, o[1] + s * x + c * y, a[2]]; }
+function segA(p, az, dy, L, sd) { const n = Math.hypot(1, dy); return [p[0] + Math.cos(az) * L / n, p[1] + dy * L / n, p[2] + Math.sin(az) * L / n * sd]; }
+function segV(p, v, L, sd) { const n = Math.hypot(v[0], v[1], v[2]); return [p[0] + v[0] * L / n, p[1] + v[1] * L / n, p[2] + v[2] * L / n * sd]; }
+function frogPose(f) {
+  const k = f.k, kf = f.kf, sw = f.sw;
+  const u = f.mat.uniforms;
+  const bodyO = [SIT.bodyO[0], SIT.bodyO[1] + (0.004 * k - 0.0028 * f.crouch) * (1 - sw), 0];
+  u.uBodyO.value.set(...bodyO);
+  const pitch = lerp(SIT.pitch + 0.08 * f.crouch - 0.24 * k, SWIM_PITCH + f.swPitch, sw);
+  u.uPitch.value = pitch;
+  f.bodyO = bodyO; f.pitchB = pitch; u.uMouth.value = f.mouth;
+  const dP = pitch - SIT.pitch, sk = f.sk;
+  const pts = [];
+  for (const sd of [1, -1]) {
+    const m = (a) => [a[0], a[1], a[2] * sd];
+    let H = m(SIT.H), tK = vlerp(m(SIT.K), m(EXT.K), k), tA = vlerp(m(SIT.A), m(EXT.A), k), tM = vlerp(m(SIT.M), m(EXT.M), k);
+    if (sw > 0) {
+      // breaststroke: thighs swing from forward-and-out to straight back while the shanks unfold
+      // and the feet sweep backward and together; legs hang just under the surface
+      const Hs = rotXY(m(SIT.H), SIT.bodyO, dP);
+      const Ks = segA(Hs, lerp(0.87, 3.05, sk), lerp(-0.05, -0.08, sk), LEN_H[0], sd);
+      const As = segA(Ks, lerp(3.40, 3.11, sk), lerp(-0.05, -0.06, sk), LEN_H[1], sd);
+      const Ms = segA(As, lerp(1.75, 3.18, sk), -0.03, LEN_H[2], sd);
+      H = vlerp(H, Hs, sw); tK = vlerp(tK, Ks, sw); tA = vlerp(tA, As, sw); tM = vlerp(tM, Ms, sw);
+    }
+    const [, K, A, M] = chain(H, [tK, tA, tM], LEN_H);
+    pts.push(H, K, A, M);
+  }
+  for (const sd of [1, -1]) {
+    const m = (a) => [a[0], a[1], a[2] * sd];
+    let S = m(SIT.S), tE = vlerp(m(SIT.E), m(EXT.E), kf), tW = vlerp(m(SIT.W), m(EXT.W), kf);
+    if (sw > 0) {
+      // forelimbs held back along the flanks, eased a little forward during the leg recovery
+      const Ss = rotXY(m(SIT.S), SIT.bodyO, dP), ar = f.arm;
+      const Es = segV(Ss, vlerp([-0.55, -0.35, 0.76], [0.10, -0.60, 0.79], ar), LEN_F[0], sd);
+      const Ws = segV(Es, vlerp([-0.93, -0.12, -0.35], [0.60, -0.45, -0.25], ar), LEN_F[1], sd);
+      S = vlerp(S, Ss, sw); tE = vlerp(tE, Es, sw); tW = vlerp(tW, Ws, sw);
+    }
+    if (f.wipe > 0.001 && sd === f.wipeSide) {
+      // after a catch: a hand comes up to the corner of the mouth and is drawn forward along the lip, stuffing the prey in
+      const ph = f.wipePh, Ew = [0.031, 0.012, 0.027 * sd], Ww = [lerp(0.033, 0.047, ph), 0.0225, lerp(0.020, 0.012, ph) * sd];
+      tE = vlerp(tE, Ew, f.wipe); tW = vlerp(tW, Ww, f.wipe);
+    }
+    const [, E, W] = chain(S, [tE, tW], LEN_F);
+    pts.push(S, E, W);
+  }
+  for (let i = 0; i < 14; i++) u.uJ.value[i].set(...pts[i]);
+  let ti = 0, fi = 0;
+  const lim = [];
+  for (let s = 0; s < 2; s++) {
+    const sd = s === 0 ? 1 : -1; const M = pts[s * 4 + 3];
+    let mn = [...pts[s * 4]], mx = [...pts[s * 4]];
+    const Aj = pts[s * 4 + 2], fa = Math.atan2((M[2] - Aj[2]) * sd, M[0] - Aj[0]);
+    for (let i = 0; i < 5; i++) {
+      // in the water the toes fan out along the foot: webbing spread on the power stroke, folded on the recovery
+      const az = lerp(lerp(SIT.toeAz[i], Math.PI - SIT.toeAz[i] * 0.5, k), fa + (2 - i) * f.spread, sw);
+      const L = SIT.toeLen[i];
+      const ty = lerp(lerp(0.0013, M[1] - 0.001, k), M[1] - 0.0008, sw);
+      const tip = [M[0] + Math.cos(az) * L, ty, M[2] + Math.sin(az) * L * sd];
+      u.uToe.value[ti++].set(...tip);
+      for (let c = 0; c < 3; c++) { mn[c] = Math.min(mn[c], tip[c]); mx[c] = Math.max(mx[c], tip[c]); }
+    }
+    for (let j = 1; j < 4; j++) for (let c = 0; c < 3; c++) { mn[c] = Math.min(mn[c], pts[s * 4 + j][c]); mx[c] = Math.max(mx[c], pts[s * 4 + j][c]); }
+    lim.push([mn, mx]);
+  }
+  for (let s = 0; s < 2; s++) {
+    const sd = s === 0 ? 1 : -1; const W = pts[8 + s * 3 + 2];
+    let mn = [...pts[8 + s * 3]], mx = [...pts[8 + s * 3]];
+    const Ej = pts[8 + s * 3 + 1], fw = Math.atan2((W[2] - Ej[2]) * sd, W[0] - Ej[0]);
+    const wp = f.wipe > 0.001 && sd === f.wipeSide ? f.wipe : 0;
+    for (let i = 0; i < 4; i++) {
+      const az = lerp(lerp(SIT.fingAz[i] * (1 - 0.4 * kf), fw + SIT.fingAz[i] * 0.45, sw), SIT.fingAz[i] * 0.5, wp);
+      const L = SIT.fingLen[i];
+      const tip = [W[0] + Math.cos(az) * L, lerp(lerp(lerp(0.0012, W[1] - 0.002, kf), W[1] - 0.0006, sw), W[1] + 0.0006, wp), W[2] + Math.sin(az) * L * sd];
+      u.uFing.value[fi++].set(...tip);
+      for (let c = 0; c < 3; c++) { mn[c] = Math.min(mn[c], tip[c]); mx[c] = Math.max(mx[c], tip[c]); }
+    }
+    for (let j = 1; j < 3; j++) for (let c = 0; c < 3; c++) { mn[c] = Math.min(mn[c], pts[8 + s * 3 + j][c]); mx[c] = Math.max(mx[c], pts[8 + s * 3 + j][c]); }
+    lim.push([mn, mx]);
+  }
+  for (let i = 0; i < 4; i++) {
+    const [mn, mx] = lim[i];
+    const c = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
+    const r = Math.hypot(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) / 2 + 0.009;
+    u.uLimbB.value[i].set(c[0], c[1], c[2], r);
+  }
+  const bmin = [bodyO[0] - 0.05, -0.002 - 0.006 * sw, -0.032], bmax = [bodyO[0] + 0.072, bodyO[1] + 0.046, 0.032];
+  for (const [mn, mx] of lim) for (let c = 0; c < 3; c++) { bmin[c] = Math.min(bmin[c], mn[c] - 0.005); bmax[c] = Math.max(bmax[c], mx[c] + 0.005); }
+  u.uBoxMin.value.set(...bmin); u.uBoxMax.value.set(...bmax);
+  u.uBreath.value = f.breath; u.uThroat.value = f.throat; u.uBlink.value = f.blink; u.uSac.value = f.sac;
+  return { bmin, bmax };
+}
+
+// ================================================================= particles: splashes & food
+const MAXP = 320;
+const partAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAXP * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const partGeo = new THREE.InstancedBufferGeometry();
+partGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+partGeo.setIndex([0, 1, 2, 0, 2, 3]);
+partGeo.setAttribute('iP', partAttr); partGeo.instanceCount = 0;
+const particles = new THREE.Mesh(partGeo, smat(/* glsl */`
+attribute vec4 iP; varying vec2 vC;
+void main(){
+  vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+  vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+  vC = position.xy;
+  vec3 w = iP.xyz + (right * position.x + up * position.y) * iP.w;
+  gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+varying vec2 vC;
+void main(){
+  float r = length(vC); if (r > 1.0) discard;
+  vec3 n = normalize(vec3(vC, sqrt(1.0 - r * r)));
+  float hl = pow(max(dot(n, normalize(vec3(-0.4, 0.5, 0.75))), 0.0), 24.0);
+  vec3 c = mix(uSkyHor, uSkyTop, 0.5) * (0.55 + 0.35 * n.y) + uSunCol * hl * 1.2;
+  float a = smoothstep(1.0, 0.75, r) * (0.45 + 0.5 * smoothstep(0.6, 1.0, r));
+  gl_FragColor = vec4(c, a);
+}`, {}, { transparent: true, depthWrite: false }));
+particles.frustumCulled = false; particles.renderOrder = 5;
+onLayers(particles, LAYER.MAIN); scene.add(particles);
+const parts = [];
+function splash(x, y, z, n, speed, size = 0.004) {
+  for (let i = 0; i < n && parts.length < MAXP; i++) {
+    const a = rr(0, TAU), v = rr(0.3, 1) * speed;
+    parts.push({ x, y, z, vx: Math.cos(a) * v * 0.45, vy: v * rr(0.7, 1.3), vz: Math.sin(a) * v * 0.45, s: size * rr(0.6, 1.3), life: 2 });
+  }
+}
+const MAXF = 64;
+const FOOD_R = 0.0125 * 2 / 3;   // pellet radius
+const foodAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAXF * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const foodGeo = new THREE.InstancedBufferGeometry().copy(new THREE.IcosahedronGeometry(1, 2));
+foodGeo.setAttribute('iF', foodAttr); foodGeo.instanceCount = 0;
+const foodMesh = new THREE.Mesh(foodGeo, smat(/* glsl */`
+attribute vec4 iF; varying vec3 vN; varying vec3 vW;
+void main(){ vN = normal; vW = iF.xyz + position * iF.w * vec3(1.0, 0.7, 1.0); gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`, /* glsl */`
+${GL_COMMON}
+varying vec3 vN; varying vec3 vW;
+void main(){
+  vec3 N = normalize(vN);
+  vec3 alb = vec3(0.55, 0.34, 0.14) * (0.85 + 0.3 * vnoise3(vW * 1350.0));
+  vec3 V = normalize(cameraPosition - vW);
+  vec3 H = normalize(uSunDir + V);
+  vec3 c = alb * (uSunCol * max(dot(N, uSunDir), 0.0) + mix(uSkyHor, uSkyTop, 0.6) * 0.5) + uSunCol * ggx(max(dot(N, H), 0.0), 0.3) * 0.04;
+  gl_FragColor = vec4(c, 1.0);
+}`));
+foodMesh.frustumCulled = false;
+onLayers(foodMesh, LAYER.MAIN); scene.add(foodMesh);
+const food = [];
+
+// ================================================================= post processing
+let bloomRTs = [];
+const brightMat = fsMat(/* glsl */`
+uniform sampler2D uTex; uniform vec2 uTexel; varying vec2 vUv;
+void main(){
+  vec3 c = vec3(0.0);
+  c += texture(uTex, vUv + uTexel * vec2(-1.0, -1.0)).rgb; c += texture(uTex, vUv + uTexel * vec2(1.0, -1.0)).rgb;
+  c += texture(uTex, vUv + uTexel * vec2(-1.0, 1.0)).rgb; c += texture(uTex, vUv + uTexel * vec2(1.0, 1.0)).rgb;
+  c *= 0.25;
+  if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
+  float l = max(max(c.r, c.g), c.b);
+  float k = max(l - 1.6, 0.0) / max(l, 1e-4);
+  gl_FragColor = vec4(min(c * k, vec3(40.0)), 1.0);
+}`, { uTex: { value: null }, uTexel: { value: new THREE.Vector2() } });
+const downMat = fsMat(/* glsl */`
+uniform sampler2D uTex; uniform vec2 uTexel; varying vec2 vUv;
+void main(){
+  vec3 c = texture(uTex, vUv).rgb * 0.25;
+  c += (texture(uTex, vUv + uTexel * vec2(-1.0, -1.0)).rgb + texture(uTex, vUv + uTexel * vec2(1.0, -1.0)).rgb
+      + texture(uTex, vUv + uTexel * vec2(-1.0, 1.0)).rgb + texture(uTex, vUv + uTexel * vec2(1.0, 1.0)).rgb) * 0.1875;
+  gl_FragColor = vec4(c, 1.0);
+}`, { uTex: { value: null }, uTexel: { value: new THREE.Vector2() } });
+const upMat = fsMat(/* glsl */`
+uniform sampler2D uTex; uniform vec2 uTexel; varying vec2 vUv;
+void main(){
+  vec3 c = texture(uTex, vUv).rgb * 4.0;
+  c += (texture(uTex, vUv + vec2(uTexel.x, 0.0)).rgb + texture(uTex, vUv - vec2(uTexel.x, 0.0)).rgb + texture(uTex, vUv + vec2(0.0, uTexel.y)).rgb + texture(uTex, vUv - vec2(0.0, uTexel.y)).rgb) * 2.0;
+  c += texture(uTex, vUv + uTexel).rgb + texture(uTex, vUv - uTexel).rgb + texture(uTex, vUv + vec2(uTexel.x, -uTexel.y)).rgb + texture(uTex, vUv + vec2(-uTexel.x, uTexel.y)).rgb;
+  gl_FragColor = vec4(c / 16.0, 1.0);
+}`, { uTex: { value: null }, uTexel: { value: new THREE.Vector2() } }, { blending: THREE.AdditiveBlending, transparent: true });
+const dofMat = fsMat(/* glsl */`
+uniform sampler2D uTex; uniform sampler2D uDepth; uniform vec2 uTexel; uniform float uNear; uniform float uFar; uniform float uFocus; uniform float uAperture; uniform float uMaxR;
+varying vec2 vUv;
+float linD(float z){ float ndc = z * 2.0 - 1.0; return 2.0 * uNear * uFar / (uFar + uNear - ndc * (uFar - uNear)); }
+float coc(float d){ return clamp(uAperture * abs(d - uFocus) / max(d, 1e-3), 0.0, 1.0); }
+void main(){
+  float d0 = linD(texture(uDepth, vUv).r);
+  float c0 = coc(d0);
+  vec3 acc = texture(uTex, vUv).rgb; float wsum = 1.0;
+  float R = c0 * uMaxR;
+  for (int i = 0; i < 28; i++){
+    float fi = float(i) + 0.5;
+    float r = sqrt(fi / 28.0);
+    float a = fi * 2.39996;
+    vec2 uv = vUv + vec2(cos(a), sin(a)) * r * R * uTexel;
+    float dj = linD(texture(uDepth, uv).r);
+    float cj = coc(dj);
+    float w = dj < d0 - 0.05 ? sat(cj / max(c0, 0.05)) : 1.0;
+    w = max(w, 0.02);
+    acc += texture(uTex, uv).rgb * w; wsum += w;
+  }
+  gl_FragColor = vec4(acc / wsum, c0);
+}`, { uTex: { value: null }, uDepth: { value: null }, uTexel: { value: new THREE.Vector2() }, uNear: { value: 0.03 }, uFar: { value: 150 }, uFocus: { value: 1 }, uAperture: { value: 0 }, uMaxR: { value: 10 } });
+dofMat.fragmentShader = 'float sat(float x){ return clamp(x, 0.0, 1.0); }\n' + dofMat.fragmentShader;
+const finalMat = fsMat(/* glsl */`
+uniform sampler2D uTex; uniform sampler2D uBloom; uniform float uExposure; uniform float uTime; uniform vec2 uRes;
+uniform sampler2D uDbg; uniform float uDbgOn; uniform float uDbgScale;
+uniform sampler2D uDof; uniform float uDofOn;
+varying vec2 vUv;
+vec3 aces(vec3 x){ const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14; return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0); }
+float h12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+void main(){
+  vec3 c = texture(uTex, vUv).rgb;
+  if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
+  c = min(c, vec3(60.0));
+  if (uDbgOn > 0.5) { gl_FragColor = vec4(texture(uDbg, vUv).rgb * uDbgScale, 1.0); return; }
+  if (uDofOn > 0.5) { vec4 dof = texture(uDof, vUv); c = mix(c, dof.rgb, smoothstep(0.07, 0.3, dof.a)); }
+  c += texture(uBloom, vUv).rgb * 0.07;
+  c *= uExposure;
+  c = aces(c);
+  vec2 q = vUv - 0.5;
+  c *= 1.0 - 0.28 * dot(q, q) * 1.6;
+  c = pow(c, vec3(1.0 / 2.2));
+  c += (h12(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5) / 255.0 * 1.5;
+  gl_FragColor = vec4(c, 1.0);
+}`, { uTex: { value: null }, uBloom: { value: null }, uExposure: { value: 1 }, uTime: G.uTime, uRes: { value: new THREE.Vector2() }, uDbg: { value: null }, uDbgOn: { value: 0 }, uDbgScale: { value: 1 }, uDof: { value: null }, uDofOn: { value: 0 } });
+
+function allocTargets() {
+  const W = renderer.domElement.width, H = renderer.domElement.height;
+  for (const rt of [mainRT, refrRT, reflRT, ...bloomRTs]) rt && rt.dispose();
+  mainRT = makeRT(W, H, { depthBuffer: true, samples: Q.msaa });
+  mainRT.depthTexture = new THREE.DepthTexture(W, H); mainRT.depthTexture.type = THREE.UnsignedIntType;
+  dofRT && dofRT.dispose();
+  dofRT = makeRT(Math.max(2, W >> 1), Math.max(2, H >> 1));
+  refrRT = makeRT(W, H, { depthBuffer: true });
+  refrRT.depthTexture = new THREE.DepthTexture(W, H);
+  refrRT.depthTexture.type = THREE.UnsignedIntType;
+  reflRT = makeRT(Math.max(2, Math.round(W * Q.refl)), Math.max(2, Math.round(H * Q.refl)), { depthBuffer: true });
+  bloomRTs = [];
+  let bw = Math.max(2, W >> 1), bh = Math.max(2, H >> 1);
+  for (let i = 0; i < 5; i++) { bloomRTs.push(makeRT(bw, bh)); bw = Math.max(2, bw >> 1); bh = Math.max(2, bh >> 1); }
+  waterMat.uniforms.uReflTex.value = reflRT.texture;
+  waterMat.uniforms.uRefrTex.value = refrRT.texture;
+  waterMat.uniforms.uRefrDepth.value = refrRT.depthTexture;
+  waterMat.uniforms.uRes.value.set(W, H);
+  if (G.uViewH) G.uViewH.value = H;
+}
+
+// ================================================================= sun shadow map
+const SHADOW_RES = TIER === 'low' ? 1024 : 1536;
+const shadowRT = new THREE.WebGLRenderTarget(SHADOW_RES, SHADOW_RES, { depthBuffer: true, type: THREE.UnsignedByteType });
+shadowRT.depthTexture = new THREE.DepthTexture(SHADOW_RES, SHADOW_RES);
+shadowRT.depthTexture.type = THREE.UnsignedIntType;
+shadowRT.depthTexture.compareFunction = THREE.LessEqualCompare;
+shadowRT.depthTexture.minFilter = shadowRT.depthTexture.magFilter = THREE.LinearFilter;
+const shadowDummy = new THREE.WebGLRenderTarget(4, 4, { depthBuffer: true, type: THREE.UnsignedByteType });
+shadowDummy.depthTexture = new THREE.DepthTexture(4, 4);
+shadowDummy.depthTexture.type = THREE.UnsignedIntType;
+shadowDummy.depthTexture.compareFunction = THREE.LessEqualCompare;
+const shadowCam = new THREE.OrthographicCamera(-8.2, 8.2, 8.2, -8.2, 0.5, 42);
+shadowCam.layers.set(LAYER.SHADOW);
+G.uShadowMap.value = shadowRT.depthTexture;
+G.uShadowTexel.value = 1 / SHADOW_RES;
+const SHADOW_BIAS = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+let shadowDummyInit = false, shadowFrame = 0;
+function renderShadow(force) {
+  
+  if (!shadowDummyInit) { renderer.setRenderTarget(shadowDummy); renderer.clear(true, true, false); shadowDummyInit = true; }
+  const d = G.uSunDir.value;
+  shadowCam.position.set(d.x * 20 + 0.9, d.y * 20, d.z * 20 - 0.3);
+  shadowCam.up.set(0, 1, 0); if (Math.abs(d.y) > 0.99) shadowCam.up.set(0, 0, 1);
+  shadowCam.lookAt(0.9, 0, -0.3);
+  shadowCam.updateMatrixWorld(); shadowCam.updateProjectionMatrix();
+  G.uShadowMat.value.copy(SHADOW_BIAS).multiply(shadowCam.projectionMatrix).multiply(shadowCam.matrixWorldInverse);
+  G.uShadowOn.value = 0;
+  G.uShadowMap.value = shadowDummy.depthTexture;
+  G.uPass.value = 3;
+  renderer.setRenderTarget(shadowRT); renderer.setClearColor(0x000000, 1); renderer.clear(true, true, false);
+  renderer.render(scene, shadowCam);
+  G.uShadowMap.value = shadowRT.depthTexture;
+  G.uShadowOn.value = 1;
+}
+
+// ================================================================= camera & controls
+const cam = { tx: 0.85, ty: -0.1, tz: -0.25, az: 0, el: 0.95, dist: 7.8, fov: 40 };
+const camGoal = Object.assign({}, cam);
+let view = 'pond';
+const dof = { focus: 3, ap: 0, apGoal: 0 };
+let userTouched = 0;
+const camRate = { orbit: 0, target: 0 };
+let jumpBoost = 0;
+function framing() {
+  const aspect = innerWidth / innerHeight;
+  const portrait = aspect < 0.9;
+  return { portrait, aspect };
+}
+function setView(name, instant) {
+  view = name;
+  const { portrait, aspect } = framing();
+  if (name === 'pond') {
+    Object.assign(camGoal, { tx: 0.85, ty: -0.1, tz: portrait ? -0.1 : -0.25, el: portrait ? 1.1 : 1.0, fov: portrait ? 50 : 40 });
+    camGoal.az = portrait ? Math.PI / 2 : 0;
+    const halfW = portrait ? 3.3 : 6.1;
+    const hfov = 2 * Math.atan(Math.tan(camGoal.fov * Math.PI / 360) * aspect);
+    camGoal.dist = clamp(halfW / Math.tan(hfov / 2) * 0.92, 2.6, 15);
+  } else if (name === 'frog') {
+    const S = FROG_SCALE * frog.size;
+    Object.assign(camGoal, { el: 0.36, dist: (portrait ? 0.46 : 0.36) * S, fov: portrait ? 46 : 38, tx: frog.pos.x, ty: frog.pos.y + 0.03 * S, tz: frog.pos.z });
+    camGoal.az = Math.atan2(Math.cos(frog.yaw + 0.55), Math.sin(frog.yaw + 0.55));
+  } else if (name === 'low') {
+    Object.assign(camGoal, { tx: 1.0, ty: 0.34, tz: -1.2, el: 0.02, dist: portrait ? 3.4 : 3.1, fov: portrait ? 56 : 48 });
+  }
+  if (instant) { Object.assign(cam, camGoal); updateCamera(0); dof.ap = dof.apGoal; }
+}
+// camera target height for a frog: at the water it hugs the surface, up on a lotus leaf it follows the frog
+const frogTY = (f) => f.pos.y - 0.45 * clamp(f.pos.y, -0.05, 0.02) + 0.03 * FROG_SCALE * f.size;
+function updateCamera(dt) {
+  if (view === 'frog') {
+    const fp = frog.pos;
+    const S = FROG_SCALE * frog.size;
+    const jumping = frog.state === 'crouch' || frog.state === 'air';
+    if (jumping && frog.jumpTo >= 0) {
+      const tp = pads[frog.jumpTo];
+      const inAir = frog.jump && frog.state === 'air';
+      const sx = inAir ? frog.jump.sx : fp.x, sz = inAir ? frog.jump.sz : fp.z;
+      const plan = frog.diving && frog.swimPlan;
+      const ex = inAir ? frog.jump.ex : plan ? plan.ex : tp.x, ez = inAir ? frog.jump.ez : plan ? plan.ez : tp.z;
+      const y0 = Math.max(inAir ? frog.jump.sy : fp.y, tp.lotus ? tp.y : 0);
+      camGoal.tx = (sx + ex) / 2; camGoal.ty = y0 * 0.75 + 0.012 + 0.35 * (inAir ? frog.jump.hgt : 0.12); camGoal.tz = (sz + ez) / 2;
+    } else {
+      camGoal.tx = fp.x; camGoal.ty = frogTY(frog); camGoal.tz = fp.z;
+    }
+    jumpBoost = lerp(jumpBoost, jumping ? 1 : 0, 1 - Math.exp(-dt * (jumping ? 4.0 : 1.2)));
+  } else jumpBoost = lerp(jumpBoost, 0, 1 - Math.exp(-dt * 3));
+  const base = view === 'frog' ? 2.6 : 2.0;
+  const k = 1 - Math.exp(-dt * (camRate.orbit || base));
+  const kt = 1 - Math.exp(-dt * (camRate.target || (view === 'frog' ? 3.6 : base)));
+  cam.tx = lerp(cam.tx, camGoal.tx, kt); cam.ty = lerp(cam.ty, camGoal.ty, kt); cam.tz = lerp(cam.tz, camGoal.tz, kt);
+  cam.az += wrapAngle(camGoal.az - cam.az) * k; cam.el = lerp(cam.el, camGoal.el, k);
+  cam.dist = lerp(cam.dist, camGoal.dist, k); cam.fov = lerp(cam.fov, camGoal.fov, k);
+  let distJ = cam.dist;
+  if (view === 'frog' && frog.jumpTo >= 0 && jumpBoost > 0.001) {
+    const tp = pads[frog.jumpTo];
+    const jd = frog.jump && frog.jump.to === frog.jumpTo ? Math.hypot(frog.jump.ex - frog.jump.sx, frog.jump.ez - frog.jump.sz) : Math.hypot(tp.x - frog.pos.x, tp.z - frog.pos.z);
+    const need = (0.62 * jd + 0.05) / (Math.tan(cam.fov * Math.PI / 360) * clamp(innerWidth / innerHeight, 0.6, 1.8));
+    distJ = Math.max(cam.dist * 1.25, Math.min(need, 1.4));
+  }
+  let az = cam.az, el = cam.el, dist = lerp(cam.dist, distJ, jumpBoost);
+  if (!OPTS.capture && !reduceMotion && view === 'pond' && performance.now() - userTouched > 9000) {
+    const t = G.uTime.value;
+    az += 0.05 * Math.sin(t * 0.045); el += 0.025 * Math.sin(t * 0.06 + 1.0);
+  }
+  camera.fov = cam.fov; camera.aspect = innerWidth / innerHeight;
+  camera.position.set(cam.tx + Math.sin(az) * Math.cos(el) * dist, cam.ty + Math.sin(el) * dist, cam.tz + Math.cos(az) * Math.cos(el) * dist);
+  if (camera.position.y < 0.03) camera.position.y = 0.03;
+  camera.lookAt(cam.tx, cam.ty, cam.tz);
+  camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+  G.uCamPos.value.copy(camera.position);
+  camera.getWorldDirection(waterMat.uniforms.uCamFwd.value);
+  const fwd = waterMat.uniforms.uCamFwd.value;
+  if (view === 'frog') { const fp = tmpV.set(frog.pos.x, frog.pos.y + 0.022 * FROG_SCALE * frog.size, frog.pos.z).sub(camera.position); dof.focus = Math.max(fp.dot(fwd), 0.05); dof.apGoal = 0.8; }
+  else if (view === 'low') { dof.focus = Math.max(tmpV.set(cam.tx, cam.ty, cam.tz).sub(camera.position).dot(fwd), 0.5) * 1.1; dof.apGoal = 0.3; }
+  else dof.apGoal = 0;
+}
+function updateReflectCamera() {
+  const cp = camera.position;
+  reflCam.position.set(cp.x, -cp.y, cp.z);
+  const fwd = V3(0, 0, -1).applyQuaternion(camera.quaternion);
+  const up = V3(0, 1, 0).applyQuaternion(camera.quaternion);
+  const target = V3(cp.x + fwd.x, -(cp.y + fwd.y), cp.z + fwd.z);
+  reflCam.up.set(up.x, -up.y, up.z);
+  reflCam.lookAt(target);
+  reflCam.fov = camera.fov; reflCam.aspect = camera.aspect; reflCam.near = camera.near; reflCam.far = camera.far;
+  reflCam.updateProjectionMatrix(); reflCam.updateMatrixWorld();
+  const plane = new THREE.Plane(V3(0, 1, 0), 0.0).applyMatrix4(reflCam.matrixWorldInverse);
+  const clip = new THREE.Vector4(plane.normal.x, plane.normal.y, plane.normal.z, plane.constant);
+  const pm = reflCam.projectionMatrix; const q = new THREE.Vector4();
+  q.x = (Math.sign(clip.x) + pm.elements[8]) / pm.elements[0];
+  q.y = (Math.sign(clip.y) + pm.elements[9]) / pm.elements[5];
+  q.z = -1.0; q.w = (1.0 + pm.elements[10]) / pm.elements[14];
+  clip.multiplyScalar(2.0 / clip.dot(q));
+  pm.elements[2] = clip.x; pm.elements[6] = clip.y; pm.elements[10] = clip.z + 1.0; pm.elements[14] = clip.w;
+  reflCam.projectionMatrixInverse.copy(pm).invert();
+  reflMatrix.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(pm).multiply(reflCam.matrixWorldInverse);
+  reflCam.layers.set(LAYER.REFL);
+}
+
+// pointer controls
+const pointers = new Map();
+let drag = null;
+canvas.addEventListener('pointerdown', (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t: performance.now() });
+  userTouched = performance.now();
+  if (pointers.size === 1) drag = { moved: false };
+  if (pointers.size === 2) { const [a, b] = [...pointers.values()]; drag = { pinch: Math.hypot(a.x - b.x, a.y - b.y), dist0: camGoal.dist, moved: true }; }
+});
+canvas.addEventListener('pointermove', (e) => {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+  userTouched = performance.now();
+  if (pointers.size === 2 && drag && drag.pinch) {
+    const [a, b] = [...pointers.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y);
+    camGoal.dist = clamp(drag.dist0 * drag.pinch / Math.max(d, 1), view === 'frog' ? 0.09 : 0.8, 16);
+    return;
+  }
+  if (!drag) return;
+  if (Math.hypot(e.clientX - p.x0, e.clientY - p.y0) > 7) { drag.moved = true; canvas.classList.add('dragging'); }
+  if (drag.moved) {
+    camGoal.az -= dx * 0.0055; camGoal.el = clamp(camGoal.el + dy * 0.004, 0.08, 1.45);
+    cam.az -= dx * 0.0055 * 0.6; cam.el = clamp(cam.el + dy * 0.004 * 0.6, 0.08, 1.45);
+  }
+});
+function endPointer(e) {
+  const p = pointers.get(e.pointerId);
+  pointers.delete(e.pointerId);
+  canvas.classList.remove('dragging');
+  if (p && drag && !drag.moved && pointers.size === 0 && performance.now() - p.t < 500) tap(e.clientX, e.clientY);
+  if (pointers.size === 0) drag = null;
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', (e) => { pointers.delete(e.pointerId); drag = null; });
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault(); userTouched = performance.now();
+  camGoal.dist = clamp(camGoal.dist * Math.exp(e.deltaY * 0.0012), view === 'frog' ? 0.09 : 0.8, 16);
+}, { passive: false });
+const ray = new THREE.Raycaster();
+function tap(cx, cy) {
+  if (!$('info').hidden) { $('info').hidden = true; $('info-btn').setAttribute('aria-expanded', 'false'); return; }
+  const ndc = new THREE.Vector2(cx / innerWidth * 2 - 1, -(cy / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const o = ray.ray.origin, d = ray.ray.direction;
+  if (d.y >= -1e-4) return;
+  // frogs first: tapping one makes it jump
+  let hitF = null, bestP = 1e9;
+  for (const f of frogs) {
+    const S = FROG_SCALE * f.size;
+    const toF = V3().copy(f.pos).add(V3(0, 0.02 * S, 0)).sub(o);
+    const along = toF.dot(d); if (along <= 0) continue;
+    const perp = Math.sqrt(Math.max(toF.lengthSq() - along * along, 0));
+    const tol = Math.max(0.035 * S / 0.55, along * 0.022);
+    if (perp < tol && perp < bestP) { bestP = perp; hitF = f; }
+  }
+  if (hitF) { if (hitF.state === 'sit') hitF.next = hitF.t; else if (hitF.state === 'swim') hitF.swim.force = true; hideHint(); return; }
+  const t = -o.y / d.y; const x = o.x + d.x * t, z = o.z + d.z * t;
+  feed(x, z);
+}
+function feed(x, z) {
+  let sd = pondSDF(x, z);
+  if (sd > 0.12) return;                       // tapped on dry land
+  if (sd > -0.34) [x, z] = snapToSdf(x, z, -0.34); // keep the pellet where koi can actually reach it
+  if (food.length >= MAXF) return;
+  hideHint();
+  { const a = rr(0, TAU), v = rr(0.04, 0.2); food.push({ x, z, y: 0.16, vy: 0, vx: Math.cos(a) * v, vz: Math.sin(a) * v, landed: false, age: 0 }); }   // one pellet per tap
+}
+
+// ================================================================= simulation updates
+function waterH(x, z, t) {
+  let h = 0;
+  const gw = G.uGw.value;
+  for (let i = 0; i < 4; i++) {
+    const g = gw[i]; const k = TAU / g.z; const w = Math.sqrt(9.81 * k);
+    h += g.w * Math.sin(k * (g.x * x + g.y * z) - w * t + i * 1.7);
+  }
+  return h;
+}
+let floatAll = null;
+function updatePads(dt, t) {
+  const all = floatAll || (floatAll = pads.slice(0, NPAD).concat(flowers, hishi, lotusFloat));
+  for (const p of all) {
+    // tether to anchor
+    const dx = p.x - p.ax, dz = p.z - p.az; const d = Math.hypot(dx, dz);
+    const tether = p.tether || 0.06;
+    if (d > tether) { const f = (d - tether) * 3.0; p.vx -= dx / d * f * dt; p.vz -= dz / d * f * dt; }
+    // gentle wind drift
+    p.vx += G.uWind.value.x * 0.004 * dt * (0.5 + 0.5 * Math.sin(t * 0.13 + p.ax * 3));
+    p.vz += G.uWind.value.y * 0.004 * dt * (0.5 + 0.5 * Math.sin(t * 0.13 + p.ax * 3));
+    // shore
+    const sd = pondSDF(p.x, p.z);
+    if (sd > -p.r * 0.9) { const [gx, gz] = pondGrad(p.x, p.z); p.vx -= gx * 0.6 * dt; p.vz -= gz * 0.6 * dt; }
+    p.vr = (p.vr || 0) * Math.exp(-dt * 1.2);
+    p.rot += p.vr * dt;
+  }
+  for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
+    const a = all[i], b = all[j];
+    const dx = b.x - a.x, dz = b.z - a.z; const d = Math.hypot(dx, dz) || 1e-4;
+    const minD = (a.r + b.r) * 0.86;
+    if (d < minD) {
+      const f = (minD - d) * 2.5 * dt; const nx = dx / d, nz = dz / d;
+      a.vx -= nx * f; a.vz -= nz * f; b.vx += nx * f; b.vz += nz * f;
+    }
+  }
+  for (const p of all) {
+    p.vx *= Math.exp(-dt * 0.9); p.vz *= Math.exp(-dt * 0.9);
+    p.x += p.vx * dt; p.z += p.vz * dt;
+    // bob spring
+    p.vb += (-p.bob * 60 - p.vb * 6) * dt; p.bob += p.vb * dt;
+    if (p.bob < -0.0025) { p.bob = -0.0025; p.vb = Math.max(p.vb, 0); }
+  }
+}
+function writePadAttrs(t) {
+  const P = padIPos.array, D = padIData.array, D2 = padIData2.array;
+  for (let i = 0; i < NPAD; i++) {
+    const p = pads[i];
+    P[i * 4] = p.x; P[i * 4 + 1] = p.z; P[i * 4 + 2] = p.rot; P[i * 4 + 3] = p.bob + p.layer * 0.0007;
+    D[i * 4] = p.r; D[i * 4 + 1] = 0; D[i * 4 + 2] = p.seed; D[i * 4 + 3] = p.curl;
+    D2[i * 4] = p.weight; D2[i * 4 + 1] = i; D2[i * 4 + 2] = p.age; D2[i * 4 + 3] = 0;
+  }
+  // flowers as discs in the mask only
+  for (let j = 0; j < flowers.length; j++) {
+    const i = NPAD + j, f = flowers[j];
+    P[i * 4] = f.x; P[i * 4 + 1] = f.z; P[i * 4 + 2] = 0; P[i * 4 + 3] = 0;
+    D[i * 4] = f.r * 0.8; D[i * 4 + 1] = 0; D[i * 4 + 2] = 0; D[i * 4 + 3] = 0;
+    D2[i * 4] = 1; D2[i * 4 + 1] = -5; D2[i * 4 + 2] = 0; D2[i * 4 + 3] = 0;
+  }
+  padIPos.needsUpdate = padIData.needsUpdate = padIData2.needsUpdate = true;
+  // stems
+  const T = stemTop.array, B = stemBot.array; let n = 0;
+  for (const p of pads.slice(0, NPAD).concat(flowers, hishi, lotusFloat, lotusStemBase)) {
+    const fy = terrainH(p.ax, p.az);
+    T[n * 4] = p.x; T[n * 4 + 1] = -0.004; T[n * 4 + 2] = p.z; T[n * 4 + 3] = p.lift ? 0.0042 : 0.0032;
+    B[n * 4] = p.ax + 0.05; B[n * 4 + 1] = fy + 0.01; B[n * 4 + 2] = p.az - 0.03; B[n * 4 + 3] = 0;
+    n++;
+  }
+  stemGeo.instanceCount = n;
+  stemTop.needsUpdate = stemBot.needsUpdate = true;
+  // flowers
+  for (const f of flowers) {
+    const h = waterH(f.x, f.z, t);
+    f.mesh.position.set(f.x, h + f.bob + f.lift, f.z);
+    f.mesh.rotation.set(0.04 * Math.sin(t * 0.7 + f.ax * 5), f.rot, 0.04 * Math.cos(t * 0.6 + f.az * 4));
+    f.mesh.updateMatrixWorld();
+  }
+}
+
+// koi collision: every fish is a capsule (tail -> nose) so heads, flanks and tails can never pass through each other or the bank
+const SEG = { px: 0, pz: 0, qx: 0, qz: 0 };
+const KOI_R = 0.115, KOI_H = 0.15;     // half width / half height as a fraction of body length
+function koiEnds(k, T = 0) { const fx = Math.cos(k.yaw), fz = Math.sin(k.yaw), cx = k.pos.x + fx * k.speed * T, cz = k.pos.z + fz * k.speed * T; return [cx - fx * 0.40 * k.L, cz - fz * 0.40 * k.L, cx + fx * 0.5 * k.L, cz + fz * 0.5 * k.L]; }
+// distance between the two body segments in plan view; closest points land in SEG (p on a, q on b)
+function koiSegDist(a, b, T = 0) {
+  const [ax, az, bx, bz] = koiEnds(a, T), [cx, cz, dx, dz] = koiEnds(b, T);
+  const d1x = bx - ax, d1z = bz - az, d2x = dx - cx, d2z = dz - cz, rx = ax - cx, rz = az - cz;
+  const A = d1x * d1x + d1z * d1z, E = d2x * d2x + d2z * d2z, F = d2x * rx + d2z * rz, C = d1x * rx + d1z * rz, B = d1x * d2x + d1z * d2z;
+  const den = A * E - B * B; let sN, tN;
+  sN = den > 1e-9 ? Math.min(Math.max((B * F - C * E) / den, 0), 1) : 0;
+  tN = (B * sN + F) / E;
+  if (tN < 0) { tN = 0; sN = Math.min(Math.max(-C / A, 0), 1); } else if (tN > 1) { tN = 1; sN = Math.min(Math.max((B - C) / A, 0), 1); }
+  SEG.px = ax + d1x * sN; SEG.pz = az + d1z * sN; SEG.qx = cx + d2x * tN; SEG.qz = cz + d2z * tN;
+  return Math.hypot(SEG.px - SEG.qx, SEG.pz - SEG.qz);
+}
+function koiContain(k) {
+  const lim = -(0.17 + 0.11 * k.L);
+  for (let it = 0; it < 4; it++) {
+    const fx = Math.cos(k.yaw), fz = Math.sin(k.yaw); let hit = false;
+    for (const sc of [0.5, 0.2, -0.2, -0.40]) {
+      const px = k.pos.x + fx * k.L * sc, pz = k.pos.z + fz * k.L * sc;
+      const sd = pondSDF(px, pz);
+      if (sd > lim) {
+        const [gx, gz] = pondGrad(px, pz); const gl = Math.hypot(gx, gz) || 1; const nx = gx / gl, nz = gz / gl;
+        k.pos.x -= nx * (sd - lim); k.pos.z -= nz * (sd - lim); hit = true;
+        const dn = fx * nx + fz * nz;                       // heading into the bank: slide along it instead
+        if (dn > 0) { const want = Math.atan2(fz - nz * dn * 1.3, fx - nx * dn * 1.3); k.yaw += wrapAngle(want - k.yaw) * 0.3; k.speed *= 0.97; }
+      }
+    }
+    if (!hit) break;
+  }
+}
+const CHASE_NEAREST = 2, CHASE_RADIUS = 3.0;   // the nearest 2 hungry koi, plus any hungry koi within 3 m of the pellet, go for it
+// movement AI: pick the heading closest to what the fish wants that does not lead to body contact along the predicted paths
+const CAND = [0, 0.2, -0.2, 0.4, -0.4, 0.65, -0.65, 0.9, -0.9, 1.2, -1.2, 1.6, -1.6, 2.2, -2.2];
+const PRED_T = [0, 0.7, 1.4, 2.1, 3.0];
+function capEnds(x, z, yaw, L) { const c = Math.cos(yaw), s = Math.sin(yaw); return [x - c * 0.40 * L, z - s * 0.40 * L, x + c * 0.5 * L, z + s * 0.5 * L]; }
+function endsDist(e1, e2) {
+  const [ax, az, bx, bz] = e1, [cx, cz, dx, dz] = e2;
+  const d1x = bx - ax, d1z = bz - az, d2x = dx - cx, d2z = dz - cz, rx = ax - cx, rz = az - cz;
+  const A = d1x * d1x + d1z * d1z, E = d2x * d2x + d2z * d2z, F = d2x * rx + d2z * rz, C = d1x * rx + d1z * rz, B = d1x * d2x + d1z * d2z;
+  const den = A * E - B * B; let sN, tN;
+  sN = den > 1e-9 ? Math.min(Math.max((B * F - C * E) / den, 0), 1) : 0;
+  tN = (B * sN + F) / E;
+  if (tN < 0) { tN = 0; sN = Math.min(Math.max(-C / A, 0), 1); } else if (tN > 1) { tN = 1; sN = Math.min(Math.max((B - C) / A, 0), 1); }
+  return Math.hypot(ax + d1x * sN - cx - d2x * tN, az + d1z * sN - cz - d2z * tN);
+}
+function pickHeading(k, desired) {
+  const spd = Math.max(k.speed, 0.07), others = [];
+  for (const o of koi) if (o !== k && Math.abs(o.pos.y - k.pos.y) < 0.26 && Math.hypot(o.pos.x - k.pos.x, o.pos.z - k.pos.z) < 2.6) others.push(o);
+  let best = 0, bestScore = 1e9, bestGap = 1, bestBlk = null;
+  for (const dl of CAND) {
+    const th = desired + dl;
+    let gap = 1, pen = 0, bank = 0, blk = null, x = k.pos.x, z = k.pos.z, yaw = k.yaw;
+    for (let n = 0; n <= 12; n++) {
+      const T = n * 0.25;
+      for (const o of others) {
+        const contact = (0.104 * (k.L + o.L) + 0.012) * (k.chasing && !o.chasing ? 0.7 : !k.chasing && o.chasing ? 1.35 : 1);   // just the body width: they may swim right alongside each other
+        const g = endsDist(capEnds(x, z, yaw, k.L), capEnds(o.pos.x + Math.cos(o.yaw) * o.speed * T, o.pos.z + Math.sin(o.yaw) * o.speed * T, o.yaw, o.L)) - contact;
+        if (g < gap) { gap = g; blk = o; }
+        if (g < 0) pen -= g;
+      }
+      if (n === 4 || n === 8) { const hx = x + Math.cos(yaw) * k.L * 0.5, hz = z + Math.sin(yaw) * k.L * 0.5; if (pondSDF(hx, hz) > -(0.3 + 0.25 * k.L)) bank++; }
+      yaw += clamp(wrapAngle(th - yaw), -0.4, 0.4);      // ~1.6 rad/s turn authority
+      x += Math.cos(yaw) * spd * 0.25; z += Math.sin(yaw) * spd * 0.25;
+    }
+    const hyst = (k.avSide && dl * k.avSide < 0) ? 0.2 : 0;
+    const score = Math.abs(dl) + hyst + (gap < 0 ? 2 : 0) + pen * 9 + bank * 2.5;
+    if (score < bestScore) { bestScore = score; best = dl; bestGap = gap; bestBlk = blk; }
+  }
+  if (best !== 0) k.avSide = Math.sign(best); else if (!others.length) k.avSide = 0;
+  return { theta: desired + best, avoid: Math.min(1, Math.abs(best)), yield: bestGap < 0 ? (bestBlk && (k.chasing ? 0 : bestBlk.chasing ? 1 : k.i > bestBlk.i) ? 1 : 0.25) : Math.abs(best) > 0.9 ? 0.3 : 0 };
+}
+const RES = { n: 0, sum: 0, max: 0 };
+// koi never push each other: the movement AI steers around contact; only the bank is a hard limit
+function resolveKoi() {
+  for (const k of koi) koiContain(k);
+}
+// koi behaviour
+function updateKoi(dt, t) {
+  for (const k of koi) {
+    const fx = Math.cos(k.yaw), fz = Math.sin(k.yaw);
+    let dx = fx * 1.2, dz = fz * 1.2;
+    // wander
+    k.wt += dt;
+    const wa = (vnoise(k.wt * 0.12 + k.i * 7.3, k.i * 3.1) - 0.5) * 3.2;
+    dx += Math.cos(k.yaw + wa) * 0.9; dz += Math.sin(k.yaw + wa) * 0.9;
+    // boundary
+    const grazing = !!k.duck;                    // a grazing koi noses in closer to the bank than it otherwise would
+    const look = (0.35 + k.L * 0.9 + k.speed * 2.0) * (grazing ? 0.55 : 1);
+    const ax = k.pos.x + fx * look, az = k.pos.z + fz * look;
+    const margin = (0.55 + 0.25 * k.L) * (grazing ? 0.45 : 1);
+    for (const pa of [0, 0.55, -0.55]) {
+      const c = Math.cos(k.yaw + pa), sn = Math.sin(k.yaw + pa), lk = pa ? look * 0.7 : look;
+      const px = k.pos.x + c * lk, pz = k.pos.z + sn * lk;
+      const sdp = pondSDF(px, pz);
+      if (sdp > -margin) { const [gx, gz] = pondGrad(px, pz); const f = (sdp + margin) * 9; dx -= gx * f; dz -= gz * f; }
+    }
+    // shallow floor ahead
+    const fl = terrainH(ax, az);
+    if (fl > k.pos.y - 0.06) {
+      const e = 0.05; const gx = terrainH(ax + e, az) - terrainH(ax - e, az), gz = terrainH(ax, az + e) - terrainH(ax, az - e);
+      const g = Math.hypot(gx, gz) || 1; dx -= gx / g * 2.5; dz -= gz / g * 2.5;
+    }
+    // separation / alignment / cohesion
+    let cx = 0, cz = 0, ax2 = 0, az2 = 0, nb = 0, avoid = 0, yield_ = 0, ax_ = 0, az_ = 0;
+    for (const o of koi) {
+      if (o === k) continue;
+      const ox = o.pos.x - k.pos.x, oz = o.pos.z - k.pos.z; const d = Math.hypot(ox, oz);
+      if (d < 1.8) { cx += o.pos.x; cz += o.pos.z; ax2 += Math.cos(o.yaw); az2 += Math.sin(o.yaw); nb++; }
+    }
+    if (nb) { dx += ax2 / nb * 0.35; dz += az2 / nb * 0.35; const coh = 0.35; dx += (cx / nb - k.pos.x) * coh; dz += (cz / nb - k.pos.z) * coh; }
+    // food
+    let targetSpeed = k.lazy ? 0.045 : 0.10 + 0.05 * Math.sin(k.wt * 0.3 + k.i);
+    let feeding = false, chasing = false;
+    k.full = Math.max(0, k.full - dt);
+    if (food.length && k.full <= 0) {
+      // each pellet belongs to the hungry koi closest to it; the others queue up at a distance instead of piling onto the same spot
+      let best = null, bd = 7.5, near = null, nd = 7.5;
+      for (const f of food) {
+        if (!f.landed) continue;
+        const d = Math.hypot(f.x - k.pos.x, f.z - k.pos.z);
+        if (d < nd) { nd = d; near = f; }
+        if (d >= bd) continue;
+        let ahead = 0;                                     // the nearest hungry koi, and any within reach, race for it
+        for (const o of koi) { if (o === k || o.full > 0) continue; const od = Math.hypot(f.x - o.pos.x, f.z - o.pos.z); if (od < d || (od === d && o.i < k.i)) ahead++; }
+        if (ahead < CHASE_NEAREST || d < CHASE_RADIUS) { bd = d; best = f; }
+      }
+      if (!best && near) {
+        feeding = true;                                   // not my pellet: hover around it, keep a body length away
+        const tx = near.x - k.pos.x, tz = near.z - k.pos.z; const td = Math.hypot(tx, tz) || 1e-3;
+        const hold = 0.40 + 0.45 * k.L;
+        if (td > hold) { dx += tx / td * 3.0; dz += tz / td * 3.0; } else { dx -= tx / td * 3.0; dz -= tz / td * 3.0; }
+        targetSpeed = td > hold ? clamp(0.06 + (td - hold) * 0.6, 0.06, 0.35) : 0.14;
+      }
+      if (best) {
+        feeding = true;
+        const mx = k.pos.x + fx * k.L * 0.5, mz = k.pos.z + fz * k.L * 0.5;
+        const tx = best.x - mx, tz = best.z - mz; const td = Math.hypot(tx, tz) || 1e-3;
+        const aw = 5.5;
+        dx += tx / td * aw; dz += tz / td * aw;
+        targetSpeed = clamp(0.16 + td * 1.4, 0.16, 0.95);   // dash for the pellet
+        if (td < 0.22) targetSpeed = Math.max(targetSpeed, 0.45);   // final lunge
+        { const ang = Math.abs(wrapAngle(Math.atan2(tz, tx) - k.yaw)); if (ang > 0.5) targetSpeed = Math.min(targetSpeed, 0.09 + td * 0.8 * (1 - ang / 3.3)); if (ang > 1.0 && td < 0.45) targetSpeed = 0.035; }   // not pointing at it: turn first, don't orbit
+        chasing = true;
+        const along = (best.x - k.pos.x) * fx + (best.z - k.pos.z) * fz, lat = Math.abs(-(best.x - k.pos.x) * fz + (best.z - k.pos.z) * fx);
+        if (((along > 0.15 * k.L && along < 0.62 * k.L && lat < 0.06 + 0.04 * k.L) || td < 0.05 + k.L * 0.05) && k.pos.y > -0.14) {
+          food.splice(food.indexOf(best), 1);
+          SFX.gulp(best.x, best.z, k.L);
+          strDisturb(best.x, best.z, 0.3);
+          addDrop(best.x, best.z, 0.04, -0.0050); addDrop(best.x + fx * 0.03, best.z + fz * 0.03, 0.06, 0.0020);
+          splash(best.x, 0.005, best.z, 10, 0.5, 0.0038);
+          k.full = rr(14, 16);
+        }
+      }
+    }
+    if (feeding && k.duck) k.duck = null;
+    // curiosity: a leaf that has just landed gets a look and a nibble, then the koi loses interest for a while
+    if (k.leafCool === undefined) { k.leafCool = rr(4, 15); k.leafTgt = null; k.leafT = 0; }
+    k.leafCool -= dt;
+    if (feeding && k.leafTgt) { k.leafTgt.by = -1; k.leafTgt = null; }
+    if (!feeding && k.leafCool <= 0) {
+      let tgt = k.leafTgt;
+      if (!tgt || tgt.st !== 'water' || tgt.by !== k.i) {
+        tgt = null; let bd = 2.4;
+        for (const L of fallen) { if (L.st !== 'water' || L.t > 15 || L.by !== -1) continue; const d = Math.hypot(L.x - k.pos.x, L.z - k.pos.z); if (d < bd) { bd = d; tgt = L; } }
+        if (tgt) { tgt.by = k.i; k.leafTgt = tgt; k.leafT = 0; } else { k.leafTgt = null; k.leafCool = rr(1.5, 3); }
+      }
+      if (tgt) {
+        k.leafT += dt; feeding = true;
+        const mx = k.pos.x + fx * k.L * 0.5, mz = k.pos.z + fz * k.L * 0.5;
+        const tx = tgt.x - mx, tz = tgt.z - mz, td = Math.hypot(tx, tz) || 1e-3;
+        dx += tx / td * 4.0; dz += tz / td * 4.0;
+        targetSpeed = clamp(0.06 + td * 0.25, 0.06, 0.2);
+        if (td < 0.04 + tgt.size * 0.4 && k.pos.y > -0.16) {
+          // not food after all: the leaf bobs and spins away, the koi sinks back down
+          addDrop(tgt.x, tgt.z, 0.03, -0.0012); splash(tgt.x, 0.004, tgt.z, 3, 0.22, 0.0022); SFX.gulp(tgt.x, tgt.z, k.L, 0.35);
+          tgt.vx += fx * 0.06; tgt.vz += fz * 0.06; tgt.spin += rr(-3, 3); tgt.dip = 1; tgt.by = -2;
+          k.leafTgt = null; k.leafCool = rr(45, 100); k.depthGoal = rr(-0.42, -0.25);
+        } else if (k.leafT > 14) { tgt.by = -2; k.leafTgt = null; k.leafCool = rr(20, 40); }
+      }
+    }
+    // grazing: now and then a koi rises under the duckweed and slurps up a few mouthfuls
+    if (k.duckCool === undefined) { k.duckCool = rr(15, 140); k.duck = null; }
+    k.duckCool -= dt;
+    if (!feeding && !k.leafTgt && k.duckCool <= 0) {
+      if (!k.duck) {
+        let br = null, bd = 4.0;
+        for (const R of duckRafts) { const d = Math.hypot(R.cx - k.pos.x, R.cz - k.pos.z); if (d < bd) { bd = d; br = R; } }
+        let bc = null, bdist = 1e9;
+        // only the open-water side of a raft is within reach; the koi keep off the very edge of the pond
+        if (br) for (let n = 0; n < 80; n++) { const c = br.list[Math.floor(rnd() * br.list.length)]; if (c.vis < 0.9 || c.eat > 0 || pondSDF(c.x, c.z) > -0.3) continue; const dd = Math.hypot(c.x - k.pos.x, c.z - k.pos.z); if (dd < bdist) { bdist = dd; bc = c; } }
+        if (bc) k.duck = { R: br, tgt: bc, bites: 2 + Math.floor(rnd() * 4), pause: 0, t: 0 }; else k.duckCool = rr(6, 14);
+      }
+      const D = k.duck;
+      if (D) {
+        D.t += dt; feeding = true;
+        const mx = k.pos.x + fx * k.L * 0.5, mz = k.pos.z + fz * k.L * 0.5;
+        const tx = D.tgt.x - mx, tz = D.tgt.z - mz, td = Math.hypot(tx, tz) || 1e-3;
+        dx += tx / td * 4.0; dz += tz / td * 4.0;
+        targetSpeed = D.pause > 0 ? 0.03 : clamp(0.04 + td * 0.3, 0.04, 0.16);
+        if (td < 0.35 && Math.abs(wrapAngle(Math.atan2(tz, tx) - k.yaw)) > 0.7) targetSpeed = 0.025;   // turn towards it first, don't circle
+        if (D.pause > 0) D.pause -= dt;
+        else if (td < 0.09 && k.pos.y > -0.13) {
+          // slurp: the target and whatever floats just in front of the mouth disappear
+          const bx = mx + fx * 0.03, bz = mz + fz * 0.03;
+          for (const c of D.R.list) if (c.eat <= 0 && (Math.hypot(c.x - D.tgt.x, c.z - D.tgt.z) < 0.03 || Math.hypot(c.x - bx, c.z - bz) < 0.035)) c.eat = rr(40, 90);
+          addDrop(bx, bz, 0.022, -0.0008); SFX.gulp(bx, bz, k.L, 0.45);
+          D.bites--; D.pause = rr(0.5, 1.2);
+          let nc = null, nb = 1e9;
+          if (D.bites > 0) for (const c of D.R.list) { if (c.eat > 0 || c.vis < 0.9) continue; const dd = Math.hypot(c.x - D.tgt.x, c.z - D.tgt.z); if (dd > 0.03 && dd < 0.13 && dd < nb && pondSDF(c.x, c.z) < -0.28) { nb = dd; nc = c; } }
+          if (nc) D.tgt = nc; else { k.duck = null; k.duckCool = rr(70, 160); k.depthGoal = rr(-0.42, -0.25); }
+        }
+        if (k.duck && D.t > 25) { k.duck = null; k.duckCool = rr(40, 90); }
+      }
+    }
+    k.lazyT -= dt;
+    if (k.lazyT < 0) { k.lazy = rnd() < 0.28 ? 1 : 0; k.lazyT = rr(4, 14); }
+    let desired = Math.atan2(dz, dx);
+    k.chasing = chasing;
+    { const pk = pickHeading(k, desired); desired = pk.theta; avoid = pk.avoid; yield_ = pk.yield; }
+    k.av = avoid; k.yl = yield_;
+    targetSpeed *= 1 - 0.75 * Math.min(yield_, 1);
+    const diff = wrapAngle(desired - k.yaw);
+    const maxTurn = (chasing ? 4.8 : feeding ? 2.6 : 1.1) + 1.0 * avoid;
+    const yr = clamp(diff * 1.8, -maxTurn, maxTurn);
+    k.yawRate = lerp(k.yawRate, yr, 1 - Math.exp(-dt * 3));
+    k.yaw += k.yawRate * dt;
+    const acc = chasing ? (targetSpeed > k.speed ? 0.90 : 0.50) : (targetSpeed > k.speed ? 0.12 : 0.07);
+    const prevSpeed = k.speed;
+    k.speed += clamp(targetSpeed - k.speed, -acc * dt, acc * dt);
+    k.pos.x += Math.cos(k.yaw) * k.speed * dt; k.pos.z += Math.sin(k.yaw) * k.speed * dt;
+    k.padT = (k.padT || 0) - dt;
+    if (chasing && k.pos.y > -0.09 && k.speed > 0.25 && k.padT <= 0) { k.padT = rr(0.7, 1.4); SFX.paddle(k.pos.x - Math.cos(k.yaw) * k.L * 0.4, k.pos.z - Math.sin(k.yaw) * k.L * 0.4, k.L, clamp(k.speed / 0.6, 0.5, 1)); }
+    else if (rnd() < dt * 0.01) SFX.blub(k.pos.x + Math.cos(k.yaw) * k.L * 0.45, k.pos.z + Math.sin(k.yaw) * k.L * 0.45);
+    // depth
+    if (!feeding && rnd() < dt * 0.08) k.depthGoal = rr(-0.42, -0.14);
+    let goal = feeding ? -0.035 - 0.05 * k.L : k.depthGoal;
+    const floorY = terrainH(k.pos.x, k.pos.z);
+    goal = Math.max(goal, floorY + 0.05 + 0.13 * k.L);
+    goal = Math.min(goal, -0.03 - 0.06 * k.L);
+    k.vy = chasing ? lerp(k.vy, clamp((goal - k.pos.y) * 3.0, -0.35, 0.35), 1 - Math.exp(-dt * 5)) : lerp(k.vy, clamp((goal - k.pos.y) * 1.2, -0.12, 0.12), 1 - Math.exp(-dt * 2));
+    k.pos.y += k.vy * dt;
+    k.pitch = lerp(k.pitch, clamp(Math.atan2(k.vy, Math.max(k.speed, 0.05)) * 0.8, -0.35, 0.35), 1 - Math.exp(-dt * 3));
+    // tail beat
+    const freq = 0.55 + k.speed / k.L * 2.3;
+    k.phase += TAU * freq * dt;
+    const effort = clamp((k.speed - prevSpeed) / dt * 3 + Math.abs(k.yawRate) * 0.25, 0, 1);
+    const ampGoal = 0.035 + 0.30 * k.speed / k.L * 0.35 + 0.05 * effort;
+    k.amp = lerp(k.amp, ampGoal, 1 - Math.exp(-dt * 3));
+    k.bend = lerp(k.bend, clamp(k.yawRate / Math.max(k.speed, 0.05) * k.L * 0.55, -1.0, 1.0), 1 - Math.exp(-dt * 4));
+    k.paddle = Math.sin(t * (k.speed < 0.07 ? 3.0 : 1.4) + k.i) * (k.speed < 0.07 ? 1.0 : 0.25);
+    // push pads
+    if (k.pos.y > -0.2) for (const p of floaters) {
+      const ox = p.x - k.pos.x, oz = p.z - k.pos.z; const d = Math.hypot(ox, oz);
+      if (d < p.r + k.L * 0.3) { p.vx += Math.cos(k.yaw) * k.speed * 0.6 * dt; p.vz += Math.sin(k.yaw) * k.speed * 0.6 * dt; p.vr += (rnd() - 0.5) * 0.2 * dt; }
+    }
+  }
+  resolveKoi();
+  for (const k of koi) {
+    k.u.uPhase.value = k.phase; k.u.uAmp.value = k.amp; k.u.uBend.value = k.bend; k.u.uPaddle.value = k.paddle;
+    for (const m of [k.body, k.fins]) {
+      m.position.copy(k.pos); m.rotation.set(0, -k.yaw, k.pitch, 'YZX'); m.scale.setScalar(k.L); m.updateMatrixWorld();
+    }
+    G.uKoiA.value[k.i].set(k.pos.x, k.pos.y, k.pos.z, k.yaw);
+    G.uKoiB.value[k.i].set(k.L, 1, 0, 0);
+  }
+}
+
+// frog behaviour (three tree frogs)
+function frogPadWorld(p, lx, lz) {
+  const c = Math.cos(p.rot), s = Math.sin(p.rot);
+  return [p.x + c * lx * p.r - s * lz * p.r, p.z + s * lx * p.r + c * lz * p.r];
+}
+function padTaken(i, self) {
+  return frogs.some((o) => o !== self && (o.pad === i || (o.jumpTo === i && (o.state === 'crouch' || o.state === 'air' || o.state === 'swim'))));
+}
+function initFrogs() {
+  const anchors = [[-2.0, 0.65], [1.30, -0.60], [2.60, 0.95], [-0.50, -0.55], [3.60, -0.30]];
+  frogs.forEach((f, idx) => {
+    let best = -1, bs = -1e9;
+    for (let i = 0; i < NPAD; i++) {
+      if (padTaken(i, f)) continue;
+      const p = pads[i]; const s = (p.r > (f.size > 1.7 ? 0.148 : f.size > 1.2 ? 0.125 : 0.105) ? 0 : -5) - Math.hypot(p.x - anchors[idx][0], p.z - anchors[idx][1]);
+      if (s > bs) { bs = s; best = i; }
+    }
+    f.pad = best; const p = pads[best];
+    p.weight = 0.35; p.curl = Math.min(p.curl, 0.15); p.age = Math.min(p.age, 0.5);
+    f.lx = [-0.30, 0.10, -0.15, 0.05, -0.2][idx]; f.lz = [0.22, -0.20, 0.05, 0.18, -0.12][idx]; f.yaw = [Math.PI * 0.8, 2.6, -0.4, 1.2, -2.2][idx];
+  });
+}
+// a big frog only settles on leaves large enough to hold it
+const padMinR = (f, base) => f.size > 1.7 ? Math.max(base, 0.145) : f.size > 1.2 ? Math.max(base, 0.118) : base;
+function pickJumpTarget(f) {
+  const cur = pads[f.pad]; const cands = [];
+  for (let i = 0; i < NPAD; i++) {
+    if (i === f.pad || padTaken(i, f)) continue;
+    const p = pads[i]; const d = Math.hypot(p.x - cur.x, p.z - cur.z);
+    if (d > 0.22 && d < 0.8 && p.r > padMinR(f, 0.09) && p.age < 0.85) cands.push(i);
+  }
+  // the low lotus leaves are perches too: a hop up out of reach of the koi
+  if (f.size < 1.7) for (let i = LOTUS0; i < pads.length; i++) {
+    const p = pads[i]; if (!p.perch || i === f.pad || padTaken(i, f)) continue;
+    const d = Math.hypot(p.x - cur.x, p.z - cur.z);
+    if (d > 0.18 && d < 0.75) { cands.push(i); cands.push(i); }
+  }
+  if (!cands.length) return -1;
+  return cands[Math.floor(rnd() * cands.length)];
+}
+// lily pad (other than `skip`) covering the point, or -1
+function padAt(x, z, skip, margin) {
+  for (let i = 0; i < NPAD; i++) { if (i === skip) continue; const p = pads[i]; if (Math.hypot(p.x - x, p.z - z) < p.r + margin) return i; }
+  return -1;
+}
+// open-water side of a pad from which a swimming frog can climb on (angle around the pad), or null if it is boxed in
+function padApproach(ti, fx, fz, skipNear = false) {
+  const p = pads[ti], a0 = Math.atan2(fz - p.z, fx - p.x);
+  for (let k = skipNear ? 3 : 0; k < 16; k++) {
+    const a = a0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (TAU / 16);
+    const x = p.x + Math.cos(a) * (p.r + 0.06), z = p.z + Math.sin(a) * (p.r + 0.06);
+    if (pondSDF(x, z) < -0.12 && !floaters.some((q) => q !== p && Math.hypot(q.x - x, q.z - z) < q.r + 0.05)) return a;
+  }
+  return null;
+}
+function pickSwimTarget(f) {
+  const cur = pads[f.pad]; const cands = [];
+  for (let i = 0; i < NPAD; i++) {
+    if (i === f.pad || padTaken(i, f)) continue;
+    const p = pads[i]; const d = Math.hypot(p.x - cur.x, p.z - cur.z);
+    if (!(d > 0.9 && d < 3.4 && p.r > padMinR(f, 0.095) && p.age < 0.8 && pondSDF((p.x + cur.x) / 2, (p.z + cur.z) / 2) < -0.3)) continue;
+    const appA = padApproach(i, cur.x, cur.z);
+    if (appA !== null) cands.push([i, appA]);
+  }
+  if (!cands.length) return null;
+  const [to, appA] = cands[Math.floor(rnd() * cands.length)];
+  // where to hit the water: open water just off the current pad, as close to the swim direction as possible
+  const tp = pads[to], gx = tp.x + Math.cos(appA) * (tp.r + 0.06), gz = tp.z + Math.sin(appA) * (tp.r + 0.06);
+  const a0 = Math.atan2(gz - cur.z, gx - cur.x);
+  let ex = cur.x + Math.cos(a0) * (cur.r + 0.16), ez = cur.z + Math.sin(a0) * (cur.r + 0.16);
+  search: for (const dd of [0.16, 0.27]) for (const o of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.9, -1.9, 2.5, -2.5]) {
+    const x = cur.x + Math.cos(a0 + o) * (cur.r + dd), z = cur.z + Math.sin(a0 + o) * (cur.r + dd);
+    if (pondSDF(x, z) < -0.15 && padAt(x, z, -1, 0.06) < 0) { ex = x; ez = z; break search; }
+  }
+  return { to, appA, ex, ez };
+}
+// free distance along heading a before a lily pad (other than `skip`) or the bank gets in the way
+function swimClear(x, z, a, L, skip) {
+  const c = Math.cos(a), s = Math.sin(a); let best = L;
+  for (let i = 0; i < floaters.length; i++) {
+    if (i === skip) continue;
+    const p = floaters[i], dx = p.x - x, dz = p.z - z, R = p.r + 0.05;
+    if (dx * dx + dz * dz < R * R) continue;            // already underneath this one
+    const along = dx * c + dz * s; if (along < 0 || along > L + R) continue;
+    const perp = Math.abs(dz * c - dx * s); if (perp >= R) continue;
+    best = Math.min(best, Math.max(along - Math.sqrt(R * R - perp * perp), 0));
+  }
+  for (let d = 0.08; d < best; d += 0.08) if (pondSDF(x + c * d, z + s * d) > -0.12) { best = Math.max(d - 0.08, 0); break; }
+  return best;
+}
+const SWIM_OFFS = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.25, -1.25, 1.6, -1.6];
+function swimHeading(f, want, dGoal, skip) {
+  const L = clamp(dGoal, 0.15, 0.8); let best = want, bs = -1e9;
+  for (const o of SWIM_OFFS) {
+    const a = want + o, c = swimClear(f.pos.x, f.pos.z, a, L, skip);
+    const sc = (c >= L - 1e-6 ? 1 : 0.6 * c / L) - Math.abs(o) * 0.22 - Math.abs(wrapAngle(a - f.yaw)) * 0.05;
+    if (sc > bs) { bs = sc; best = a; }
+  }
+  return best;
+}
+function frogGroundY(p, x, z, t) {
+  if (p.lotus) return p.y + lotusLocalH(p, x - p.x, z - p.z) + 0.004;
+  return waterH(x, z, t) + p.bob + 0.0041 + p.layer * 0.0007;
+}
+function updateFrog(f, dt, t) {
+  f.t += dt;
+  f.breath = 0.5 + 0.5 * Math.sin(t * f.breathW + f.i * 2.1);
+  // calling bouts: the male inflates his vocal sac in quick pulses
+  if (f.male && f.state === 'sit') {
+    f.callT -= dt;
+    if (f.callT < 0 && f.callN === 0) {
+      f.callN = 3 + Math.floor(rnd() * 4); f.callPh = 0; f.callK = 0;
+      // calling is catching: other males nearby often join in
+      for (const o of frogs) if (o !== f && o.male && o.callN === 0 && o.callT > 2 && rnd() < 0.5) o.callT = rr(0.4, 2.2);
+    }
+    if (f.callN > 0) {
+      f.callPh += dt;
+      const P = 0.34, ph = f.callPh % P;
+      f.sac = ph < 0.13 ? smooth(0, 0.13, ph) : 1 - smooth(0.13, 0.30, ph);
+      if (f.callK < f.callN && f.callPh >= f.callK * P + 0.03) { f.callK++; SFX.croak(f); }
+      if (f.callPh >= P * f.callN) { f.callN = 0; f.callT = rr(10, 24) * (lightName === 'evening' ? 0.55 : lightName === 'morning' ? 1.3 : 1); f.sac = 0; }
+    } else f.sac = lerp(f.sac, 0, 1 - Math.exp(-dt * 10));
+  } else { f.callN = 0; f.sac = lerp(f.sac, 0, 1 - Math.exp(-dt * 12)); }
+  f.throat = (f.callN > 0 ? 0 : Math.max(0, Math.sin(t * f.throatW + f.i))) * 0.9 * (f.state === 'sit' ? 1 : 0.2);
+  f.blinkT -= dt;
+  if (f.blinkT < 0) { f.blinkT = rr(2.5, 7); f.blinkStart = t; }
+  { const ub = f.blinkStart !== undefined ? t - f.blinkStart : -1;
+    f.blink = ub < 0 || ub > 0.34 ? 0 : ub < 0.1 ? smooth(0, 0.1, ub) : ub < 0.15 ? 1 : 1 - smooth(0.15, 0.34, ub); }
+  if (f.state === 'swim' && f.swim) f.blink = Math.max(f.blink, clamp((-f.swim.y - 0.006) / 0.008, 0, 1));
+  else if (f.state === 'air' && f.jump && f.jump.water) f.blink = Math.max(f.blink, smooth(0.8, 1.0, f.t / f.jump.dur));
+  if (f.blinkHold !== undefined) f.blink = f.blinkHold;   // debug: freeze the lids
+  const p0 = pads[f.pad];
+  if (f.state !== 'swim' && !(f.state === 'air' && f.jump && f.jump.fromWater)) f.sw = 0;
+  if (f.state === 'sit') {
+    f.k = lerp(f.k, 0, 1 - Math.exp(-dt * 10)); f.kf = lerp(f.kf, 0, 1 - Math.exp(-dt * 10));
+    f.crouch = lerp(f.crouch, 0, 1 - Math.exp(-dt * 6));
+    const [x, z] = frogPadWorld(p0, f.lx, f.lz);
+    f.pos.set(x, frogGroundY(p0, x, z, t), z);
+    f.pitchJ = 0;
+    const hunting = frogHuntSit(f, dt, t);
+    if (f.tongue) {
+      // the strike: the head dips and the body lunges a few millimetres after the tongue
+      const lt = Math.sin(clamp(f.tongue.t / 0.18, 0, 1) * Math.PI);
+      f.pitchJ = -0.14 * lt; f.pos.x += Math.cos(f.yaw) * 0.004 * lt * f.size; f.pos.z += Math.sin(f.yaw) * 0.004 * lt * f.size;
+    }
+    if (hunting) { /* watching a strider, striking at it, or eating it */ }
+    else if ((f.swimIn -= dt) < 0 && f.t > 1.5) {           // every so often a frog leaves its pad and swims to a far one
+      const plan = pickSwimTarget(f); f.swimIn = plan ? rr(40, 80) : 10;
+      if (plan) { f.state = 'crouch'; f.t = 0; f.jumpTo = plan.to; f.diving = true; f.swimPlan = plan; }
+    } else if (f.t > f.next) {
+      const target = pickJumpTarget(f);
+      if (target >= 0) { f.state = 'crouch'; f.t = 0; f.jumpTo = target; }
+      else f.next = f.t + 4;
+    }
+  } else if (f.state === 'crouch' && f.hunt) {
+    // a quick crouch, eyes on the prey, then the lunge
+    const S = f.hunt.prey;
+    f.crouch = smooth(0, 0.12, f.t);
+    const [x, z] = frogPadWorld(p0, f.lx, f.lz);
+    f.pos.set(x, frogGroundY(p0, x, z, t) - 0.0005, z);
+    if (S.st !== 'skate') { f.hunt = null; f.state = 'sit'; f.t = 2; f.next = Math.max(f.next, 4); }
+    else if (f.hunt.edge) {
+      // the creeping hop along its own leaf
+      const [lx, lz] = f.hunt.edge, [ex, ez] = frogPadWorld(p0, lx, lz), dist = Math.hypot(ex - f.pos.x, ez - f.pos.z);
+      f.yaw += wrapAngle(Math.atan2(ez - f.pos.z, ex - f.pos.x) - f.yaw) * (1 - Math.exp(-dt * 14));
+      if (f.t > 0.1) {
+        f.jump = { sx: f.pos.x, sy: f.pos.y, sz: f.pos.z, ex, ez, lx, lz, dur: 0.2 + dist * 0.3, hgt: 0.012 + dist * 0.15, to: f.pad, water: false, soft: true };
+        f.hunt = null; f.state = 'air'; f.t = 0;
+      }
+    } else {
+      f.yaw += wrapAngle(Math.atan2(S.z - f.pos.z, S.x - f.pos.x) - f.yaw) * (1 - Math.exp(-dt * 14));
+      if (f.t > 0.12) frogLunge(f, S, t);
+    }
+  } else if (f.state === 'crouch') {
+    f.crouch = smooth(0, 0.22, f.t);
+    const [x, z] = frogPadWorld(p0, f.lx, f.lz);
+    f.pos.set(x, frogGroundY(p0, x, z, t) - 0.0005, z);
+    const tp = pads[f.jumpTo];
+    const plan = f.diving ? f.swimPlan : null;
+    const want = plan ? Math.atan2(plan.ez - f.pos.z, plan.ex - f.pos.x) : Math.atan2(tp.z - f.pos.z, tp.x - f.pos.x);
+    f.yaw += wrapAngle(want - f.yaw) * (1 - Math.exp(-dt * 9));
+    if (f.t > (plan ? 0.36 : 0.3)) {
+      const lx = rr(-0.25, 0.1), lz = rr(-0.3, 0.3);
+      let [ex, ez] = frogPadWorld(tp, lx, lz);
+      if (plan) { ex = plan.ex; ez = plan.ez; }             // a flat leap off the pad, head first into open water
+      const dist = Math.hypot(ex - f.pos.x, ez - f.pos.z), rise = plan ? 0 : Math.max(0, frogGroundY(tp, ex, ez, t) - f.pos.y);
+      f.jump = plan ? { sx: f.pos.x, sy: f.pos.y, sz: f.pos.z, ex, ez, lx, lz, dur: 0.30 + dist * 0.38, hgt: 0.04 + dist * 0.12, to: f.jumpTo, water: true }
+        : { sx: f.pos.x, sy: f.pos.y, sz: f.pos.z, ex, ez, lx, lz, dur: 0.30 + dist * 0.32 + rise * 0.45, hgt: 0.05 + dist * 0.22 + rise * 0.55, to: f.jumpTo, water: false };
+      p0.vb -= 0.02 * f.size * f.size;
+      SFX.hop(f.pos.x, f.pos.y, f.pos.z);
+      if (!p0.lotus) { addDrop(f.pos.x - Math.cos(f.yaw) * 0.025, f.pos.z - Math.sin(f.yaw) * 0.025, 0.04, 0.0016); addDrop(p0.x, p0.z, p0.r * 1.15, -0.0016); }
+      if (!frogs.some((o) => o !== f && o.pad === f.pad)) p0.weight = 1;
+      f.state = 'air'; f.t = 0;
+    }
+  } else if (f.state === 'air') {
+    const j = f.jump; const u = clamp(f.t / j.dur, 0, 1);
+    const tp = pads[j.to];
+    const [ex, ez] = j.water ? [j.ex, j.ez] : frogPadWorld(tp, j.lx, j.lz);
+    const ey = j.water ? waterH(ex, ez, t) - 0.010 : frogGroundY(tp, ex, ez, t);
+    const x = lerp(j.sx, ex, u), z = lerp(j.sz, ez, u);
+    const y = lerp(j.sy, ey, u) + 4 * j.hgt * u * (1 - u);
+    const vy = (ey - j.sy) / j.dur + 4 * j.hgt * (1 - 2 * u) / j.dur;
+    const vh = Math.hypot(ex - j.sx, ez - j.sz) / j.dur;
+    f.pos.set(x, y, z);
+    f.yaw += wrapAngle(Math.atan2(ez - j.sz, ex - j.sx) - f.yaw) * (1 - Math.exp(-dt * 12));
+    f.pitchJ = Math.atan2(vy, vh) * (j.water ? 0.85 : 0.7);
+    if (j.water) {                                          // diving: body stretched, legs trailing, hands forward
+      f.k = smooth(0, 0.12, u); f.kf = smooth(0, 0.1, u);
+    } else {
+      f.k = u < 0.12 ? smooth(0, 0.12, u) : u > 0.7 ? 1 - smooth(0.7, 1.0, u) * 0.85 : 1;
+      f.kf = u < 0.1 ? smooth(0, 0.1, u) : u > 0.75 ? 1 - smooth(0.85, 1.0, u) : 1;
+    }
+    f.sw = j.fromWater ? Math.max(0, f.sw - dt / 0.14) : 0;
+    f.crouch = lerp(f.crouch, 0, 1 - Math.exp(-dt * 20));
+    if (j.hunt && !j.tongued && !f.tongue) {
+      const S = j.hunt;
+      if (S.st !== 'skate') j.tongued = true;
+      else if (u > 0.45) {
+        const md = Math.hypot(S.x - f.mouthW.x, S.y - f.mouthW.y, S.z - f.mouthW.z);
+        if (md < FROG_REACH * f.size * 1.25) { j.tongued = true; frogShootTongue(f, S, f.mouthW); }
+        else if (u > 0.97) {
+          j.tongued = true;
+          if (md < FROG_REACH * f.size * 1.8) frogShootTongue(f, S, f.mouthW);
+          else { if (S.hunter === f) S.hunter = null; strStats.missed++; }
+        }
+      }
+    }
+    if (u >= 1 && j.water) {
+      // plop: the frog knifes in, sinks a little, then bobs up and starts to swim
+      const c = Math.cos(f.yaw), sn = Math.sin(f.yaw), S = FROG_SCALE * f.size;
+      addDrop(ex, ez, 0.045, -0.0012);
+      addDrop(ex + c * 0.05, ez + sn * 0.05, 0.035, -0.0006);
+      splash(ex, 0.006, ez, 12, 0.5, 0.003);
+      SFX.plunk(ex, ez, f.size);
+      strDisturb(ex, ez, 0.32);
+      const plan = f.swimPlan || { appA: padApproach(j.to, ex, ez) ?? 0 };
+      f.swim = { ph: 0.3, T: rr(0.56, 0.68) * Math.pow(f.size, 0.3), kick: 1, amp: 1, v: vh * 0.4, y: ey - (waterH(ex, ez, t) - SWIM_FLOAT * S), vy: vy * 0.4, tt: 0, bow: 0.15, appA: plan.appA };
+      f.sk = 1; f.spread = 0.1; f.arm = 0; f.swPitch = 0;
+      f.state = 'swim'; f.t = 0; f.diving = false;
+    } else if (u >= 1) {
+      f.swimPlan = null;
+      f.pad = j.to; f.lx = j.lx; f.lz = j.lz; tp.weight = 0.35;
+      const sz = f.size;                                    // a heavier frog presses the leaf down harder
+      const c = Math.cos(f.yaw), s = Math.sin(f.yaw);
+      if (tp.lotus) {
+        // a lotus leaf bounces on its stalk, and the beads of water on it skitter about
+        tp.vb -= 0.06 * sz * sz;
+        for (const b of tp.drops) { b.vx += rr(-0.35, 0.35); b.vz += rr(-0.35, 0.35); }
+        SFX.lotusPat(ex, ey, ez, sz);
+      } else if (j.soft) {
+        tp.vb -= 0.012 * sz * sz;
+        addDrop(tp.x, tp.z, tp.r * 1.2, -0.0008);
+      } else {
+        tp.vb -= 0.03 * sz * sz; tp.vx += c * 0.025 * sz; tp.vz += s * 0.025 * sz;
+        addDrop(ex + c * 0.03 * sz, ez + s * 0.03 * sz, 0.045 * sz, -0.0024);
+        addDrop(ex - c * 0.04 * sz, ez - s * 0.04 * sz, 0.035 * sz, -0.0014);
+        addDrop(tp.x, tp.z, tp.r * 1.2, -0.0030);
+        splash(ex + c * 0.045, 0.006, ez + s * 0.045, 6, 0.38, 0.0022);
+        SFX.pat(ex, ey, ez, f.size);
+        strDisturb(ex, ez, 0.22, 0.7);
+      }
+      f.state = 'land'; f.t = 0;
+    }
+  } else if (f.state === 'swim') {
+    const sw = f.swim, tp = pads[f.jumpTo], S = FROG_SCALE * f.size;
+    sw.tt += dt;
+    f.sw = Math.min(1, f.sw + dt / 0.25);
+    f.k = 1; f.kf = lerp(f.kf, 0, 1 - Math.exp(-dt * 6)); f.crouch = 0;
+    // goal: the open-water side of the target pad, then the pad itself
+    const R = tp.r + 0.06;
+    const gx = tp.x + Math.cos(sw.appA) * R, gz = tp.z + Math.sin(sw.appA) * R;
+    const dA = Math.hypot(gx - f.pos.x, gz - f.pos.z), dP = Math.hypot(tp.x - f.pos.x, tp.z - f.pos.z);
+    const atPad = dP < tp.r + 0.05 + 0.04 * f.size;
+    if (sw.re && dA < 0.035) sw.re = false;
+    const nearA = !sw.re && (atPad || dA < 0.12);
+    const toPad = Math.atan2(tp.z - f.pos.z, tp.x - f.pos.x);
+    let want = nearA ? toPad : Math.atan2(gz - f.pos.z, gx - f.pos.x);
+    if (!nearA && sw.tt > 0.4) want = swimHeading(f, want, dA, f.jumpTo);
+    if (f.chase && (f.chase.st !== 'skate' || f.chase.hunter !== f || f.chaseT > 4 || f.tongue)) { if (f.chase.hunter === f && f.chase.st === 'skate') f.chase.hunter = null; f.chase = null; f.chaseCool = rr(4, 8); }
+    if (!f.chase && !f.tongue && f.swallow <= 0 && f.fullT <= 0 && sw.tt > 0.6 && f.chaseCool <= 0 && sw.tt < 30) {
+      for (const S of striders) {
+        if (S.st !== 'skate' || (S.hunter && S.hunter !== f)) continue;
+        const d = Math.hypot(S.x - f.pos.x, S.z - f.pos.z);
+        if (d < 0.32 * Math.sqrt(f.size) && Math.abs(wrapAngle(Math.atan2(S.z - f.pos.z, S.x - f.pos.x) - f.yaw)) < 1.3) { f.chase = S; S.hunter = f; f.chaseT = 0; break; }
+      }
+    }
+    if (f.chase) {
+      const S = f.chase; f.chaseT += dt;
+      want = Math.atan2(S.z - f.pos.z, S.x - f.pos.x); sw.force = true;
+      const md = Math.hypot(S.x - f.mouthW.x, S.z - f.mouthW.z);
+      if (md < FROG_REACH * f.size * 1.1 && Math.abs(wrapAngle(want - f.yaw)) < 0.7) { frogShootTongue(f, S, f.mouthW); f.chase = null; f.chaseCool = rr(4, 8); }
+    }
+    // stroke cycle: power (legs snap straight back, ~0.13 s) -> glide with legs together -> slow recovery
+    const PW = 0.22, GL = 0.52;
+    const skPrev = f.sk;
+    sw.ph += dt / sw.T;
+    if (sw.ph >= 1) {
+      sw.ph -= 1; sw.T = rr(0.56, 0.7) * Math.pow(f.size, 0.3);   // bigger frogs kick slower but further
+      // full kicks in open water, gentle ones close in, none while a glide will carry it there
+      const remain = nearA ? Math.max(dP - tp.r - 0.03 * f.size, 0) : dA + 0.1;
+      sw.kick = remain < 0.05 || sw.v / 2.0 > remain ? 0 : Math.min(1, 0.3 + remain * 1.4);
+      if (sw.force) { sw.kick = 1; sw.force = false; }
+      if (sw.y < -0.03) sw.kick = Math.max(sw.kick, 0.6);
+      sw.amp = sw.kick > 0 ? 0.6 + 0.4 * sw.kick : 0;
+    }
+    const ph = sw.ph, amp = sw.amp;
+    const sk = ph < PW ? amp * (0.5 - 0.5 * Math.cos(Math.PI * ph / PW)) : ph < GL ? amp : amp * (0.5 + 0.5 * Math.cos(Math.PI * (ph - GL) / (1 - GL)));
+    const dsk = sk - skPrev;
+    const power = amp > 0 && ph < PW;
+    // thrust comes from the legs sweeping back; drawing them up again costs a little; water drag in between
+    if (dsk > 0) sw.v += 0.34 * Math.pow(f.size, 0.7) * (sw.kick / Math.max(amp, 0.01)) * dsk; else sw.v += 0.04 * dsk;
+    sw.v = Math.max(0, sw.v - sw.v * 2.0 * dt);
+    f.sk = sk;
+    // steering happens mostly during the kicks
+    const turnK = 1.4 + (power ? 10 * sw.kick : 0) + (nearA ? 3 : 0) + (sw.v < 0.05 ? 2.5 : 0);
+    f.yaw += wrapAngle(want - f.yaw) * (1 - Math.exp(-dt * turnK));
+    const c0 = Math.cos(f.yaw), s0 = Math.sin(f.yaw);
+    let nx = f.pos.x + c0 * sw.v * dt, nz = f.pos.z + s0 * sw.v * dt;
+    if (pondSDF(nx, nz) > -0.1) { [nx, nz] = snapToSdf(nx, nz, -0.1); sw.v *= 0.7; }
+    const dn = Math.hypot(nx - tp.x, nz - tp.z);
+    const rimR = tp.r + 0.035 * f.size;
+    if (dn < rimR) { nx = tp.x + (nx - tp.x) / dn * rimR; nz = tp.z + (nz - tp.z) / dn * rimR; sw.v *= 0.5; }
+    f.pos.x = nx; f.pos.z = nz;
+    // float at the surface; slip underneath any other pad that is in the way
+    const under = padAt(nx + c0 * 0.045 * f.size, nz + s0 * 0.045 * f.size, f.jumpTo, 0.0) >= 0 || padAt(nx, nz, f.jumpTo, 0.02) >= 0 || hishiAt(nx, nz, -0.01);
+    sw.vy += (38 * ((under ? -0.048 : 0) - sw.y) - 8.5 * sw.vy) * dt;
+    if (dsk > 0) sw.vy += 0.03 * sw.kick * dsk;                 // each kick lifts the head a touch
+    sw.y += sw.vy * dt;
+    // boxed in under a neighbouring leaf at the rim: back out and go round to an open side
+    sw.stuck = atPad && under && !sw.re ? (sw.stuck || 0) + dt : 0;
+    if (sw.stuck > 1.2) { const a = padApproach(f.jumpTo, nx, nz, true); if (a !== null) { sw.appA = a; sw.re = true; } sw.stuck = 0; }
+    f.pos.y = waterH(nx, nz, t) - SWIM_FLOAT * S + sw.y;
+    f.pitchJ = lerp(f.pitchJ, clamp(Math.atan2(sw.vy, Math.max(sw.v, 0.12)) * 0.7, -0.6, 0.5), 1 - Math.exp(-dt * 10));
+    f.swPitch = power ? -0.05 * sw.kick * Math.sin(Math.PI * ph / PW) : 0;
+    f.spread = power ? lerp(0.1, 0.3, Math.sin(Math.PI * ph / PW)) : lerp(f.spread, 0.07, 1 - Math.exp(-dt * 12));
+    f.arm = ph > GL ? 0.3 * Math.sin(Math.PI * (ph - GL) / (1 - GL)) : 0;
+    // ripples: a push of water behind the feet on each kick, a faint bow wave off the head while moving
+    const dry = sw.y > -0.022;
+    if (power && skPrev < amp * 0.7 && sk >= amp * 0.7 && dry) { addDrop(nx - c0 * 0.075 * f.size, nz - s0 * 0.075 * f.size, 0.03 * f.size, -0.0010 * sw.kick); SFX.swish(nx - c0 * 0.06, nz - s0 * 0.06, sw.kick, f.size); }
+    sw.bow -= dt;
+    if (sw.bow < 0 && sw.v > 0.1 && dry) { sw.bow = 0.09; addDrop(nx + c0 * 0.035 * f.size, nz + s0 * 0.035 * f.size, 0.026, 0.00045 * Math.min(sw.v / 0.3, 1.5)); }
+    // at the rim, legs drawn up and facing the pad: spring out of the water onto it
+    const facing = Math.abs(wrapAngle(toPad - f.yaw)) < 0.35;
+    if ((atPad && amp === 0 && sk < 0.05 && facing && sw.y > -0.012) || sw.tt > 70) {
+      const ux = (nx - tp.x) / (dP || 1), uz = (nz - tp.z) / (dP || 1), cr = Math.cos(tp.rot), sr = Math.sin(tp.rot);
+      const lx = (cr * ux + sr * uz) * 0.5, lz = (-sr * ux + cr * uz) * 0.5;
+      const [ex, ez] = frogPadWorld(tp, lx, lz);
+      const d2 = Math.hypot(ex - nx, ez - nz);
+      f.jump = { sx: nx, sy: f.pos.y, sz: nz, ex, ez, lx, lz, dur: 0.30 + d2 * 0.5, hgt: 0.04 + d2 * 0.18, to: f.jumpTo, water: false, fromWater: true };
+      addDrop(nx, nz, 0.045, 0.0018);
+      splash(nx - c0 * 0.03, 0.004, nz - s0 * 0.03, 5, 0.3, 0.0025);
+      SFX.climb(nx, nz);
+      strDisturb(nx, nz, 0.2, 0.6);
+      f.state = 'air'; f.t = 0;
+    }
+  } else if (f.state === 'land') {
+    const tp = pads[f.pad];
+    const [x, z] = frogPadWorld(tp, f.lx, f.lz);
+    f.pos.set(x, frogGroundY(tp, x, z, t), z);
+    f.k = lerp(f.k, 0, 1 - Math.exp(-dt * 14)); f.kf = lerp(f.kf, 0, 1 - Math.exp(-dt * 14));
+    f.pitchJ = lerp(f.pitchJ, 0, 1 - Math.exp(-dt * 14));
+    f.crouch = Math.sin(clamp(f.t / 0.3, 0, 1) * Math.PI) * 0.8;
+    if (f.t > 0.35) { f.state = 'sit'; f.t = 0; f.next = rr(9, 18); }
+  }
+  if (f.state === 'sit' && !f.prey && f.t > 1 && f.t < 1 + dt * 1.01) f.turn = wrapAngle(rr(-0.6, 0.6));
+  if (f.state === 'sit' && f.turn) { const s = f.turn * dt * 1.5; f.yaw += s; f.turn -= s; if (Math.abs(f.turn) < 0.01) f.turn = 0; }
+  f.fullT -= dt; f.chaseCool -= dt;
+  frogSwallow(f, dt);
+  if (!f.tongue && f.swallow <= 0) f.mouth = Math.max(0, f.mouth - dt * 8);
+  const { bmin, bmax } = frogPose(f);
+  // world matrix: T(pos) * Ry(-yaw) * S(scale) * pivot pitch
+  const S = FROG_SCALE * f.size;
+  const py = 0.026;
+  tmpM.makeTranslation(f.pos.x, f.pos.y, f.pos.z);
+  tmpM.multiply(tmpM2.makeRotationY(-f.yaw));
+  tmpM.multiply(tmpM2.makeScale(S, S, S));
+  tmpM.multiply(tmpM2.makeTranslation(0, py, 0));
+  tmpM.multiply(tmpM2.makeRotationZ(f.pitchJ));
+  tmpM.multiply(tmpM2.makeTranslation(0, -py, 0));
+  f.world.copy(tmpM);
+  const u = f.mat.uniforms;
+  u.uFrogMat.value.copy(tmpM); u.uFrogInv.value.copy(tmpM).invert();
+  const jj = f.jump, ua = f.state === 'air' && jj ? f.t / jj.dur : 0;
+  const inWater = f.state === 'swim' || (f.state === 'air' && !!jj && ((jj.water && ua > 0.5) || (jj.fromWater && ua < 0.5)));
+  if (inWater !== f.inWater) { f.inWater = inWater; if (inWater) f.box.layers.enable(LAYER.REFR); else f.box.layers.disable(LAYER.REFR); }
+  u.uWaterY.value = waterH(f.pos.x, f.pos.z, t); u.uClipOn.value = inWater ? 1 : 0; u.uSwim.value = f.sw;
+  if (f.tongue) frogTongueUpdate(f, dt, t);
+  u.uMouth.value = f.mouth;
+  frogMouthWorld(f, f.mouthW);
+  for (const S of striders) if (S.st === 'mouth' && S.eater === f) {
+    // the last of it disappearing into the mouth, legs still sticking out
+    const k = Math.min(S.mouthT / 0.45, 1);
+    frogMouthWorld(f, tmpMouth, 0.002 + 0.013 * k);
+    S.x = tmpMouth.x; S.y = tmpMouth.y - 0.0015; S.z = tmpMouth.z; S.yaw = f.yaw + Math.PI / 2;
+  }
+  const c = [(bmin[0] + bmax[0]) / 2, (bmin[1] + bmax[1]) / 2, (bmin[2] + bmax[2]) / 2];
+  f.box.matrix.copy(tmpM).multiply(tmpM2.makeTranslation(c[0], c[1], c[2])).multiply(tmpM2.clone().makeScale(bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]));
+  f.box.matrixWorld.copy(f.box.matrix);
+}
+function updateFrogs(dt, t) {
+  for (const f of frogs) updateFrog(f, dt, t);
+  frogs.forEach((f, i) => {
+    const onPad = f.state !== 'air' && f.state !== 'swim';
+    G.uFrogA.value[i].set(f.pos.x, f.pos.y, f.pos.z, onPad ? f.pad : -1);
+    const bc = V3(0.0, 0.024, 0).applyMatrix4(f.world);
+    G.uFrogC.value[i].set(bc.x, bc.y, bc.z, f.yaw);
+    G.uFrogB.value[i].set(0.05 * FROG_SCALE * f.size, 0, 0, 0);
+  });
+}
+
+// ================================================================= water striders (アメンボ)
+// Aquarius-like pond skaters: a slender dark body held a few millimetres above the water on six legs — very long middle
+// legs that row, long hind legs that trail and steer, short front legs for grabbing. Now and then one flies in from the
+// bank and drops onto the water; they skate in jerky glides, rest, scatter from anything that moves near them, and
+// after a while may fly off again. The frogs hunt them.
+const STR_MAX = 4;                          // at most four at a time (the dimple shading has room for four)
+const striders = [];
+const strStats = { spawned: 0, eaten: 0, missed: 0, left: 0, lunges: 0, strikes: 0 };
+let strSpawnT = 5, strInit = false;
+// legs in the strider's own frame (metres at scale 1; x forward, y up, z out to the side): coxa, femur, tibia, tarsus
+const STR_LEG = {
+  front: { b: [0.0047, 0.0029, 0.0008], fem: 0.0040, tib: 0.0040, tar: 0.0015 },
+  mid: { b: [0.0005, 0.0027, 0.0014], fem: 0.0118, tib: 0.0106, tar: 0.0062 },
+  hind: { b: [-0.0007, 0.0027, 0.0012], fem: 0.0100, tib: 0.0090, tar: 0.0042 },
+};
+function strNew(x, z, yaw) {
+  return { st: 'skate', x, y: 0, z, vx: 0, vz: 0, yaw, s: rr(0.88, 1.15), t: 0, stay: rr(110, 240), mode: 'rest', modeT: rr(1, 4),
+    strokeT: rr(0.2, 1), stroke: -1, sweep: 0, tx: x, tz: z, fleeN: 0, fleeX: 0, fleeZ: 0, fleeDelay: -1, alert: 0, hunter: null,
+    fly: null, wing: 0, flail: 0, mouthT: 0, eater: null, pivot: 0, ph: rr(0, TAU), seed: rnd() };
+}
+// open water to land on, away from leaves, rosettes and the other striders
+function strSpot(nearX, nearZ, R) {
+  for (let i = 0; i < 80; i++) {
+    let x, z;
+    if (nearX !== undefined) { const a = rr(0, TAU), d = Math.sqrt(rnd()) * R; x = nearX + Math.cos(a) * d; z = nearZ + Math.sin(a) * d; }
+    else { x = rr(DOMAIN.x, DOMAIN.x + DOMAIN.w); z = rr(DOMAIN.z, DOMAIN.z + DOMAIN.h); }
+    if (pondSDF(x, z) > -0.25 || floaters.some((p) => Math.hypot(p.x - x, p.z - z) < p.r + 0.05)) continue;
+    if (striders.some((o) => o.st !== 'gone' && Math.hypot(o.x - x, o.z - z) < 0.15)) continue;
+    return [x, z];
+  }
+  return null;
+}
+// a strider flies in from somewhere beyond the bank and drops onto the water
+function strSpawn(onWater) {
+  if (striders.filter((o) => o.st !== 'gone').length >= STR_MAX) return null;
+  const spot = strSpot(); if (!spot) return null;
+  const [ex, ez] = spot, S = strNew(ex, ez, rr(0, TAU));
+  strStats.spawned++;
+  striders.push(S);
+  if (onWater) return S;
+  const a = rr(0, TAU);
+  let sx = ex, sz = ez;
+  for (let d = 1.2; d < 6; d += 0.3) { sx = ex + Math.cos(a) * d; sz = ez + Math.sin(a) * d; if (pondSDF(sx, sz) > 0.4) break; }
+  const sy = (pondSDF(sx, sz) > 0 ? terrainH(sx, sz) : 0) + rr(0.45, 0.85);
+  const dist = Math.hypot(ex - sx, ez - sz);
+  S.st = 'fly'; S.x = sx; S.z = sz; S.y = sy; S.yaw = Math.atan2(ez - sz, ex - sx);
+  S.fly = { sx, sy, sz, ex, ez, ey: 0, t: 0, dur: dist / rr(0.75, 1.05) + 0.4, leave: false, wob: rr(0, TAU) };
+  SFX.striderWings(sx, sy, sz, S.fly.dur);
+  return S;
+}
+function strTakeOff(S) {
+  const a = rr(0, TAU);
+  let ex = S.x, ez = S.z;
+  for (let d = 1.2; d < 6; d += 0.3) { ex = S.x + Math.cos(a) * d; ez = S.z + Math.sin(a) * d; if (pondSDF(ex, ez) > 0.6) break; }
+  S.fly = { sx: S.x, sy: 0.004, sz: S.z, ex, ez, ey: (pondSDF(ex, ez) > 0 ? terrainH(ex, ez) : 0) + rr(0.6, 1.0), t: 0, dur: Math.hypot(ex - S.x, ez - S.z) / rr(0.75, 1.0) + 0.3, leave: true, wob: rr(0, TAU) };
+  S.st = 'fly'; S.yaw = Math.atan2(ez - S.z, ex - S.x);
+  addDrop(S.x, S.z, 0.01, 0.00008);
+  SFX.striderWings(S.x, 0.01, S.z, S.fly.dur);
+}
+// scatter: a run of fast strokes away from whatever set it off
+function strFlee(S, fx, fz, delay = 0) {
+  if (S.st !== 'skate') return;
+  S.fleeX = fx; S.fleeZ = fz; S.alert = 1;
+  if (delay > 0) { if (S.fleeDelay < 0) S.fleeDelay = delay; return; }
+  S.mode = 'flee'; S.fleeN = 3 + Math.floor(rnd() * 4); S.strokeT = Math.min(S.strokeT, rr(0.0, 0.04));
+}
+// something big hit the water nearby (a frog diving in, a koi gulping, a pellet): striders close to it bolt
+function strDisturb(x, z, r, p = 0.9) {
+  for (const S of striders) if (S.st === 'skate' && Math.hypot(S.x - x, S.z - z) < r && rnd() < p) strFlee(S, x, z, rr(0.02, 0.1));
+}
+function strAlarm(S, fx, fz, p) { if (S.st === 'skate' && rnd() < p) strFlee(S, fx, fz, rr(0.04, 0.14)); }
+// world position of a point given in the strider's frame
+function strW(S, lx, ly, lz, out) {
+  const c = Math.cos(S.yaw), s = Math.sin(S.yaw);
+  out[0] = S.x + lx * c - lz * s; out[1] = S.y + ly; out[2] = S.z + lx * s + lz * c;
+  return out;
+}
+// the legs (strider frame), for the current stroke and situation
+const _lg = Array.from({ length: 24 }, () => [0, 0, 0]);
+function strLegPose(S) {
+  const sc = S.s, onW = S.st === 'skate', air = !onW, fl = S.flail;
+  const sw = S.sweep;
+  let n = 0;
+  const leg = (L, sd, th, el, th2, th3, elA, elB) => {
+    const b = [L.b[0] * sc, L.b[1] * sc, L.b[2] * sc * sd];
+    const kx = b[0] + Math.cos(el) * Math.cos(th) * L.fem * sc, ky = b[1] + Math.sin(el) * L.fem * sc, kz = b[2] + Math.cos(el) * Math.sin(th) * L.fem * sc * sd;
+    let ax, ay, az;
+    if (!air) {
+      // the tibia reaches down to the water, the tarsus lies on it
+      const tl = L.tib * sc, hr = Math.sqrt(Math.max(tl * tl - ky * ky, 1e-8));
+      ax = kx + Math.cos(th2) * hr; ay = 0; az = kz + Math.sin(th2) * hr * sd;
+    } else {
+      const tl = L.tib * sc; ax = kx + Math.cos(elA) * Math.cos(th2) * tl; ay = ky + Math.sin(elA) * tl; az = kz + Math.cos(elA) * Math.sin(th2) * tl * sd;
+    }
+    const ta = L.tar * sc;
+    const tx = ax + Math.cos(th3) * Math.cos(air ? elB : 0) * ta, ty = ay + (air ? Math.sin(elB) * ta : 0), tz = az + Math.sin(th3) * Math.cos(air ? elB : 0) * ta * sd;
+    _lg[n][0] = b[0]; _lg[n][1] = b[1]; _lg[n][2] = b[2]; n++;
+    _lg[n][0] = kx; _lg[n][1] = ky; _lg[n][2] = kz; n++;
+    _lg[n][0] = ax; _lg[n][1] = ay; _lg[n][2] = az; n++;
+    _lg[n][0] = tx; _lg[n][1] = ty; _lg[n][2] = tz; n++;
+  };
+  const j = (k) => fl ? Math.sin(S.t * 31 + k * 2.1 + S.seed * 9) * 0.45 * fl : 0;
+  for (const sd of [1, -1]) {
+    const k0 = sd > 0 ? 0 : 3;
+    if (S.st === 'fly') {
+      // in flight the legs trail back under the body
+      leg(STR_LEG.front, sd, 0.75, 0.25, 0.4, 0.4, -0.5, -0.4);
+      leg(STR_LEG.mid, sd, 2.25, 0.05, 2.55, 2.75, -0.18, -0.1);
+      leg(STR_LEG.hind, sd, 2.85, 0.05, 2.95, 3.0, -0.12, -0.1);
+    } else if (air) {
+      // caught: legs kicking
+      leg(STR_LEG.front, sd, 0.6 + j(k0), 0.4 + j(k0 + 1), 0.8, 0.9, -0.6 + j(k0 + 2), -0.5);
+      leg(STR_LEG.mid, sd, 1.5 + j(k0 + 3), 0.2 + j(k0 + 4), 1.7 + j(k0 + 5), 1.9, -0.7 + j(k0 + 6), -0.4);
+      leg(STR_LEG.hind, sd, 2.6 + j(k0 + 7), 0.1 + j(k0 + 8), 2.7, 2.8, -0.6 + j(k0 + 9), -0.3);
+    } else {
+      // on the water: the middle legs sweep back on the power stroke; hind legs trail; front legs held ready
+      const th = 1.16 + 0.82 * sw;
+      leg(STR_LEG.front, sd, 0.52 - 0.12 * sw, 0.72, 0.80, 0.95);
+      leg(STR_LEG.mid, sd, th, 0.40 + 0.08 * sw, th + 0.10, th + 0.30 + 0.25 * sw);
+      leg(STR_LEG.hind, sd, 2.70 - 0.12 * sw, 0.30, 2.66, 2.62);
+    }
+  }
+  return _lg;
+}
+const _w0 = [0, 0, 0], _w1 = [0, 0, 0];
+// the six feet in the world (tarsus middles), for the dimples and the ripples
+function strFeet(S, out) {
+  const L = strLegPose(S);
+  for (let i = 0; i < 6; i++) {
+    const a = L[i * 4 + 2], b = L[i * 4 + 3];
+    strW(S, (a[0] + b[0]) * 0.5, 0, (a[2] + b[2]) * 0.5, _w0);
+    out[i * 2] = _w0[0]; out[i * 2 + 1] = _w0[2];
+  }
+  return out;
+}
+const _feet = new Float32Array(12);
+
+// ---------------------------------------------------------------- drawing: bodies (instanced ellipsoids), legs and tongues (ribbons), wings
+const STR_PARTS = [   // centre, radii (strider frame, at scale 1), colour, gloss
+  { c: [0.0061, 0.0034, 0], r: [0.0016, 0.0011, 0.0012], col: [0.020, 0.016, 0.012], g: 0.15 },
+  { c: [0.0059, 0.0039, 0.0012], r: [0.00078, 0.00078, 0.00072], col: [0.07, 0.035, 0.025], g: 0.9 },
+  { c: [0.0059, 0.0039, -0.0012], r: [0.00078, 0.00078, 0.00072], col: [0.07, 0.035, 0.025], g: 0.9 },
+  { c: [0.0021, 0.0031, 0], r: [0.0035, 0.0013, 0.0016], col: [0.024, 0.019, 0.013], g: 0.2 },
+  { c: [-0.0049, 0.0029, 0], r: [0.0047, 0.0010, 0.0012], col: [0.018, 0.014, 0.010], g: 0.15 },
+];
+const NSP = STR_PARTS.length, MAXSTRDRAW = 8;
+const strBodyGeo = new THREE.InstancedBufferGeometry().copy(new THREE.IcosahedronGeometry(1, 2));
+const strBA = new THREE.InstancedBufferAttribute(new Float32Array(MAXSTRDRAW * NSP * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const strBB = new THREE.InstancedBufferAttribute(new Float32Array(MAXSTRDRAW * NSP * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const strBC = new THREE.InstancedBufferAttribute(new Float32Array(MAXSTRDRAW * NSP * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const strBM = new THREE.InstancedBufferAttribute(new Float32Array(MAXSTRDRAW * NSP * 4), 4).setUsage(THREE.DynamicDrawUsage);
+strBodyGeo.setAttribute('iA', strBA); strBodyGeo.setAttribute('iB', strBB); strBodyGeo.setAttribute('iC', strBC); strBodyGeo.setAttribute('iM', strBM);
+strBodyGeo.instanceCount = 0;
+const strBodyMesh = new THREE.Mesh(strBodyGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform sampler2D uSurf;
+attribute vec4 iA; attribute vec4 iB; attribute vec4 iC; attribute vec4 iM;   // centre, yaw | radii, pitch | colour, gloss | water-relative?, strider centre, CPU water height
+varying vec3 vW; varying vec3 vN; varying vec4 vC;
+void main(){
+  vec3 l = position * iB.xyz, n = normal / iB.xyz;
+  float cp = cos(iB.w), sp = sin(iB.w);
+  l = vec3(cp * l.x - sp * l.y, sp * l.x + cp * l.y, l.z); n = vec3(cp * n.x - sp * n.y, sp * n.x + cp * n.y, n.z);
+  float c = cos(iA.w), s = sin(iA.w);
+  vec3 w = iA.xyz + vec3(c * l.x - s * l.z, l.y, s * l.x + c * l.z);
+  vN = normalize(vec3(c * n.x - s * n.z, n.y, s * n.x + c * n.z));
+  if (iM.x > 0.5) w.y += textureLod(uSurf, domUV(iM.yz), 0.0).r - iM.w;       // ride the water under it, ripples and all
+  vW = w; vC = iC;
+  gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+varying vec3 vW; varying vec3 vN; varying vec4 vC;
+void main(){
+  if (IS_SHADOW) discard;
+  vec3 N = normalize(vN), V = normalize(cameraPosition - vW);
+  float sh = sunShadow(vW, N);
+  float ndl = sat(dot(N, uSunDir));
+  vec3 col = vC.rgb * (uSunCol * ndl * sh + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.6);
+  // the velvety, water-repellent hair: a silvery sheen along the outline
+  col += mix(uSkyHor, uSkyTop, 0.5) * pow(1.0 - sat(dot(N, V)), 2.5) * 0.07 * (1.0 - vC.a);
+  vec3 H = normalize(uSunDir + V);
+  col += uSunCol * ggx(max(dot(N, H), 0.0), mix(0.45, 0.06, vC.a)) * mix(0.02, 0.6, vC.a) * sh * ndl;
+  col += skyColor(reflect(-V, N), 0.0) * vC.a * 0.25;
+  gl_FragColor = vec4(fogLand(col, vW), 1.0);
+}`));
+strBodyMesh.frustumCulled = false;
+onLayers(strBodyMesh, LAYER.MAIN, LAYER.REFL); scene.add(strBodyMesh);
+// thin, camera-facing ribbons for legs, antennae and the frogs' tongues; thinner than a pixel they fade instead of
+// turning into hard black hairlines
+const MAXRV = 4000;
+const rvP = new Float32Array(MAXRV * 3), rvT = new Float32Array(MAXRV * 3), rvW = new Float32Array(MAXRV), rvC = new Float32Array(MAXRV * 4), rvM = new Float32Array(MAXRV * 4);
+const rvIdx = new Uint16Array(MAXRV * 3);
+const dynRibGeo = new THREE.BufferGeometry();
+const rvPA = new THREE.BufferAttribute(rvP, 3).setUsage(THREE.DynamicDrawUsage), rvTA = new THREE.BufferAttribute(rvT, 3).setUsage(THREE.DynamicDrawUsage);
+const rvWA = new THREE.BufferAttribute(rvW, 1).setUsage(THREE.DynamicDrawUsage), rvCA = new THREE.BufferAttribute(rvC, 4).setUsage(THREE.DynamicDrawUsage), rvMA = new THREE.BufferAttribute(rvM, 4).setUsage(THREE.DynamicDrawUsage);
+const rvIA = new THREE.BufferAttribute(rvIdx, 1).setUsage(THREE.DynamicDrawUsage);
+dynRibGeo.setAttribute('position', rvPA); dynRibGeo.setAttribute('aT', rvTA); dynRibGeo.setAttribute('aW', rvWA); dynRibGeo.setAttribute('aC', rvCA); dynRibGeo.setAttribute('aM', rvMA);
+dynRibGeo.setIndex(rvIA); dynRibGeo.setDrawRange(0, 0);
+const dynRibMesh = new THREE.Mesh(dynRibGeo, smat(/* glsl */`
+${GL_COMMON}
+uniform sampler2D uSurf; uniform float uViewH;
+attribute vec3 aT; attribute float aW; attribute vec4 aC; attribute vec4 aM;   // tangent | signed half width | colour, gloss | mode, centre, CPU water height
+varying vec3 vW; varying vec3 vSide; varying vec3 vT; varying float vU; varying vec4 vC; varying float vA;
+void main(){
+  vec3 P = position;
+  if (aM.x > 0.5) {
+    if (aM.x < 1.5) P.y += textureLod(uSurf, domUV(aM.yz), 0.0).r - aM.w;         // carried with the body over the waves
+    else P.y = textureLod(uSurf, domUV(P.xz), 0.0).r + 0.0003;                    // a foot: lying on the water itself
+  }
+  vec3 toCam = cameraPosition - P; float dist = length(toCam); toCam /= dist;
+  vec3 side = normalize(cross(aT, toCam) + vec3(1e-6, 0.0, 0.0));
+  float mpp = 2.0 * dist / (uViewH * projectionMatrix[1][1]);
+  float w = max(abs(aW), 0.6 * mpp);
+  P += side * sign(aW) * w;
+  vW = P; vSide = side; vT = aT; vU = sign(aW); vC = aC; vA = clamp(abs(aW) / w, 0.05, 1.0);
+  gl_Position = projectionMatrix * viewMatrix * vec4(P, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+${GL_SHADOW}
+varying vec3 vW; varying vec3 vSide; varying vec3 vT; varying float vU; varying vec4 vC; varying float vA;
+void main(){
+  if (IS_SHADOW) discard;
+  vec3 V = normalize(cameraPosition - vW);
+  vec3 fwd = normalize(cross(vSide, vT)); if (dot(fwd, V) < 0.0) fwd = -fwd;
+  float u = clamp(vU, -1.0, 1.0); vec3 N = normalize(vSide * u * 0.85 + fwd * sqrt(max(1.0 - 0.72 * u * u, 0.0)));
+  float sh = sunShadow(vW, N);
+  float ndl = sat(dot(N, uSunDir)), gl = vC.a;
+  vec3 col = vC.rgb * (uSunCol * ndl * sh + mix(uSkyHor, uSkyTop, 0.5 + 0.5 * N.y) * 0.6);
+  col += mix(uSkyHor, uSkyTop, 0.5) * pow(1.0 - sat(dot(N, V)), 3.0) * 0.05 * (1.0 - gl);   // fine hairs along the outline
+  vec3 H = normalize(uSunDir + V);
+  col += uSunCol * ggx(max(dot(N, H), 0.0), mix(0.45, 0.08, gl)) * mix(0.03, 0.55, gl) * sh * ndl;
+  col += skyColor(reflect(-V, N), 0.0) * gl * 0.18;
+  gl_FragColor = vec4(fogLand(col, vW), vA);
+}`, {}, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+dynRibMesh.frustumCulled = false; dynRibMesh.renderOrder = 4;
+onLayers(dynRibMesh, LAYER.MAIN, LAYER.REFL); scene.add(dynRibMesh);
+let rvN = 0, riN = 0;
+// one polyline: points [x,y,z], half widths, colour, gloss, mode (0 free, 1 rides with the strider body, 2 lies on the water)
+function rvLine(pts, widths, col, gloss, modes, cen) {
+  const n = pts.length; if (rvN + n * 2 > MAXRV || n < 2) return;
+  const base = rvN;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i], a = pts[Math.max(i - 1, 0)], b = pts[Math.min(i + 1, n - 1)];
+    let tx = b[0] - a[0], ty = b[1] - a[1], tz = b[2] - a[2]; const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+    const w = typeof widths === 'number' ? widths : widths[i], md = typeof modes === 'number' ? modes : modes[i];
+    for (const sg of [-1, 1]) {
+      const v = rvN++;
+      rvP[v * 3] = p[0]; rvP[v * 3 + 1] = p[1]; rvP[v * 3 + 2] = p[2];
+      rvT[v * 3] = tx; rvT[v * 3 + 1] = ty; rvT[v * 3 + 2] = tz;
+      rvW[v] = sg * w;
+      rvC[v * 4] = col[0]; rvC[v * 4 + 1] = col[1]; rvC[v * 4 + 2] = col[2]; rvC[v * 4 + 3] = gloss;
+      rvM[v * 4] = md; rvM[v * 4 + 1] = cen ? cen[0] : 0; rvM[v * 4 + 2] = cen ? cen[1] : 0; rvM[v * 4 + 3] = cen ? cen[2] : 0;
+    }
+  }
+  for (let i = 0; i < n - 1; i++) { const a = base + i * 2; rvIdx[riN++] = a; rvIdx[riN++] = a + 1; rvIdx[riN++] = a + 2; rvIdx[riN++] = a + 1; rvIdx[riN++] = a + 3; rvIdx[riN++] = a + 2; }
+}
+// wings: a blur of beating membrane on each side while flying
+const MAXWING = 16;
+const wingA = new THREE.InstancedBufferAttribute(new Float32Array(MAXWING * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const wingB = new THREE.InstancedBufferAttribute(new Float32Array(MAXWING * 4), 4).setUsage(THREE.DynamicDrawUsage);
+const wingGeo = new THREE.InstancedBufferGeometry();
+wingGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, -1, 1, 0, -1, 1, 0, 1, 0, 0, 1], 3));
+wingGeo.setIndex([0, 1, 2, 0, 2, 3]);
+wingGeo.setAttribute('iA', wingA); wingGeo.setAttribute('iB', wingB); wingGeo.instanceCount = 0;
+const wingMesh = new THREE.Mesh(wingGeo, smat(/* glsl */`
+${GL_COMMON}
+attribute vec4 iA; attribute vec4 iB;   // hinge, yaw | side, span, chord, stroke angle
+varying vec2 vQ; varying vec3 vW;
+void main(){
+  float sd = iB.x, a = iB.w;
+  vec3 l = vec3((position.z * 0.5 - 0.15) * iB.z, sin(a) * position.x * iB.y, sd * cos(a) * position.x * iB.y);
+  float c = cos(iA.w), s = sin(iA.w);
+  vW = iA.xyz + vec3(c * l.x - s * l.z, l.y, s * l.x + c * l.z);
+  vQ = vec2(position.x, position.z);
+  gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0);
+}`, /* glsl */`
+${GL_COMMON}
+varying vec2 vQ; varying vec3 vW;
+void main(){
+  vec2 e = vec2(vQ.x, vQ.y * (0.7 + 0.3 * vQ.x));
+  float r = length(vec2(vQ.x * 1.05 - 0.05, vQ.y / (0.35 + 0.65 * sqrt(max(1.0 - vQ.x, 0.0)) * (0.3 + 0.7 * vQ.x) + 0.01)));
+  if (vQ.x > 1.0 || r > 1.0) discard;
+  float a = 0.16 * (1.0 - smoothstep(0.6, 1.0, r)) + 0.06 * (0.5 + 0.5 * cos(vQ.y * 30.0));
+  vec3 col = mix(uSkyHor, uSkyTop, 0.4) * 0.8 + uSunCol * 0.12;
+  gl_FragColor = vec4(fogLand(col, vW), a);
+}`, {}, { transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+wingMesh.frustumCulled = false; wingMesh.renderOrder = 6;
+onLayers(wingMesh, LAYER.MAIN); scene.add(wingMesh);
+
+const STR_LEGCOL = [0.026, 0.020, 0.015], STR_ANTCOL = [0.03, 0.024, 0.018];
+const _pts = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];
+function strDraw(S, cen, ib, wb) {
+  // body parts
+  const sc = S.s, A = strBA.array, B = strBB.array, C = strBC.array, M = strBM.array;
+  const water = S.st === 'skate';
+  for (let k = 0; k < NSP; k++) {
+    const P = STR_PARTS[k], o = (ib + k) * 4;
+    strW(S, P.c[0] * sc, P.c[1] * sc, P.c[2] * sc, _w0);
+    A[o] = _w0[0]; A[o + 1] = _w0[1]; A[o + 2] = _w0[2]; A[o + 3] = -S.yaw;
+    B[o] = P.r[0] * sc; B[o + 1] = P.r[1] * sc; B[o + 2] = P.r[2] * sc; B[o + 3] = k === 4 ? 0.05 : 0;
+    C[o] = P.col[0]; C[o + 1] = P.col[1]; C[o + 2] = P.col[2]; C[o + 3] = P.g;
+    M[o] = water ? 1 : 0; M[o + 1] = cen[0]; M[o + 2] = cen[1]; M[o + 3] = cen[2];
+  }
+  // legs
+  const L = strLegPose(S);
+  const fw = [0.00062, 0.00045, 0.0003, 0.00022], mw = [0.00052, 0.00034, 0.00022, 0.00016];
+  for (let i = 0; i < 6; i++) {
+    for (let k = 0; k < 4; k++) { const q = L[i * 4 + k]; strW(S, q[0], q[1], q[2], _pts[k]); }
+    const front = i === 0 || i === 3;
+    const pts = [_pts[0].slice(), _pts[1].slice(), _pts[2].slice(), _pts[3].slice()];
+    rvLine(pts, front ? fw : mw, STR_LEGCOL, 0.1, water ? [1, 1, 2, 2] : 0, cen);
+  }
+  // antennae: four segments, flicking now and then
+  for (const sd of [1, -1]) {
+    const tw = Math.sin(S.t * 3.1 + S.seed * 7 + sd) * 0.0004;
+    const pts = [[0.0072, 0.0038, 0.0005], [0.0090, 0.0047, 0.0011], [0.0108, 0.0051 + tw, 0.0018], [0.0124, 0.0050 + tw * 2, 0.0025], [0.0137, 0.0046 + tw * 3, 0.0031]].map((q) => strW(S, q[0] * sc, q[1] * sc, q[2] * sc * sd, [0, 0, 0]));
+    rvLine(pts, [0.00022, 0.00018, 0.00016, 0.00014, 0.00012], STR_ANTCOL, 0.1, water ? 1 : 0, cen);
+  }
+  // wings while flying
+  if (S.st === 'fly' && wb < MAXWING - 1) {
+    const WA = wingA.array, WB = wingB.array;
+    strW(S, 0.0018 * sc, 0.0042 * sc, 0, _w0);
+    for (const sd of [1, -1]) {
+      const o = wb * 4;
+      WA[o] = _w0[0]; WA[o + 1] = _w0[1]; WA[o + 2] = _w0[2]; WA[o + 3] = -S.yaw;
+      WB[o] = sd; WB[o + 1] = 0.0105 * sc; WB[o + 2] = 0.0075 * sc; WB[o + 3] = 0.35 + 0.55 * Math.sin(S.wing);
+      wb++;
+    }
+  }
+  return wb;
+}
+
+// ---------------------------------------------------------------- behaviour
+function strUpdateSkate(S, dt, t) {
+  S.t += dt; S.stay -= dt; S.alert = Math.max(0, S.alert - dt * 0.25); S.modeT -= dt;
+  // what is moving around it? frogs on the move are noticed from afar, a frog sitting still hardly at all
+  for (const f of frogs) {
+    const d = Math.hypot(f.pos.x - S.x, f.pos.z - S.z);
+    // a frog gathering itself to strike hardly moves; one in mid-leap at it is only felt at the last moment
+    const soft = (f.state === 'air' && f.jump && f.jump.soft) || (f.state === 'crouch' && f.hunt);
+    const strike = f.state === 'air' && f.jump && f.jump.hunt === S;
+    const moving = !soft && (f.state === 'air' || f.state === 'swim' || f.state === 'crouch' || f.state === 'land');
+    const R = (strike ? 0.15 : moving ? 0.30 : 0.085) * Math.sqrt(f.size), h = strike ? 3 : moving ? 7 : 0.5;
+    if (d < R && S.mode !== 'flee' && S.fleeDelay < 0 && rnd() < h * dt) strFlee(S, f.pos.x, f.pos.z);
+  }
+  for (const k of koi) {
+    if (k.pos.y < -0.15) continue;
+    const hx = k.pos.x + Math.cos(k.yaw) * k.L * 0.4, hz = k.pos.z + Math.sin(k.yaw) * k.L * 0.4;
+    const d = Math.hypot(hx - S.x, hz - S.z);
+    if (d < 0.16 + 0.35 * k.speed && S.mode !== 'flee' && S.fleeDelay < 0 && rnd() < 5 * dt) strFlee(S, hx, hz);
+  }
+  if (S.fleeDelay >= 0) { S.fleeDelay -= dt; if (S.fleeDelay < 0) { S.fleeDelay = -1; strFlee(S, S.fleeX, S.fleeZ); } }
+  // rest a while, wander to somewhere new (they like the sheltered water along the edges of the leaves), flee
+  if (S.mode === 'rest' && S.modeT <= 0) {
+    let spot = null;
+    if (rnd() < 0.6) { const p = floaters[Math.floor(rnd() * floaters.length)]; const a = rr(0, TAU); const x = p.x + Math.cos(a) * (p.r + rr(0.05, 0.14)), z = p.z + Math.sin(a) * (p.r + rr(0.05, 0.14)); if (Math.hypot(x - S.x, z - S.z) < 1.4 && pondSDF(x, z) < -0.15 && !floaters.some((q) => Math.hypot(q.x - x, q.z - z) < q.r + 0.03)) spot = [x, z]; }
+    if (!spot) spot = strSpot(S.x, S.z, 0.9);
+    if (spot) { S.tx = spot[0]; S.tz = spot[1]; S.mode = 'wander'; S.modeT = rr(8, 16); S.strokeT = Math.min(S.strokeT, rr(0.1, 0.4)); }
+    else S.modeT = rr(1, 3);
+  } else if (S.mode === 'wander' && (S.modeT <= 0 || Math.hypot(S.tx - S.x, S.tz - S.z) < 0.07)) { S.mode = 'rest'; S.modeT = rr(2, 9); }
+  if (S.mode === 'rest') {
+    // the odd small pivot on the spot
+    S.pivot -= dt;
+    if (S.pivot < 0) { S.pivot = rr(1.5, 5); S.yawTo = S.yaw + rr(-0.9, 0.9); }
+    if (S.yawTo !== undefined) { const dy = wrapAngle(S.yawTo - S.yaw); S.yaw += dy * Math.min(1, dt * 6); if (Math.abs(dy) < 0.01) S.yawTo = undefined; }
+  }
+  S.strokeT -= dt;
+  if (S.strokeT <= 0 && (S.mode === 'wander' || S.mode === 'flee')) {
+    const flee = S.mode === 'flee';
+    let want = flee ? Math.atan2(S.z - S.fleeZ, S.x - S.fleeX) + rr(-0.6, 0.6) : Math.atan2(S.tz - S.z, S.tx - S.x) + rr(-0.25, 0.25);
+    // steer round leaves and the bank
+    for (let k = 0; k < 6; k++) {
+      const ax = S.x + Math.cos(want) * 0.12, az = S.z + Math.sin(want) * 0.12;
+      if (pondSDF(ax, az) < -0.06 && !floaters.some((p) => Math.hypot(p.x - ax, p.z - az) < p.r + 0.025)) break;
+      want += (k % 2 ? -1 : 1) * (0.5 + 0.35 * k);
+    }
+    S.yaw += clamp(wrapAngle(want - S.yaw), -1.5, 1.5);
+    const imp = flee ? rr(0.45, 0.8) : rr(0.13, 0.30);
+    S.vx += Math.cos(S.yaw) * imp; S.vz += Math.sin(S.yaw) * imp;
+    const sp = Math.hypot(S.vx, S.vz); if (sp > 1.1) { S.vx *= 1.1 / sp; S.vz *= 1.1 / sp; }
+    S.stroke = 0; S.strokeAmp = imp;
+    // each stroke sends a little pulse of ripples out from the middle feet
+    strFeet(S, _feet);
+    addDrop(_feet[2], _feet[3], 0.008, -0.00010 * (imp / 0.3)); addDrop(_feet[8], _feet[9], 0.008, -0.00010 * (imp / 0.3));
+    if (flee) { S.fleeN--; S.strokeT = rr(0.07, 0.13); if (S.fleeN <= 0) { S.mode = rnd() < 0.5 ? 'rest' : 'wander'; S.modeT = rr(1.5, 5); if (S.mode === 'wander') { const sp2 = strSpot(S.x, S.z, 0.8); if (sp2) { S.tx = sp2[0]; S.tz = sp2[1]; } else S.mode = 'rest'; } } }
+    else S.strokeT = rr(0.35, 1.25);
+  }
+  // glide: straight on with little drag along the body, sideways slip damped hard; the surface current carries it a little
+  const c = Math.cos(S.yaw), sn = Math.sin(S.yaw);
+  let vf = S.vx * c + S.vz * sn, vs = -S.vx * sn + S.vz * c;
+  vf *= Math.exp(-dt * 2.3); vs *= Math.exp(-dt * 9);
+  S.vx = vf * c - vs * sn + G.uWind.value.x * 0.008 * dt; S.vz = vf * sn + vs * c + G.uWind.value.y * 0.008 * dt;
+  S.x += S.vx * dt; S.z += S.vz * dt;
+  for (const p of floaters) {
+    const dx = S.x - p.x, dz = S.z - p.z, R = p.r + 0.018 * S.s, d2 = dx * dx + dz * dz;
+    if (d2 < R * R) { const d = Math.sqrt(d2) || 1e-4, nx = dx / d, nz = dz / d; S.x = p.x + nx * R; S.z = p.z + nz * R; const vn = S.vx * nx + S.vz * nz; if (vn < 0) { S.vx -= 1.6 * vn * nx; S.vz -= 1.6 * vn * nz; } }
+  }
+  if (pondSDF(S.x, S.z) > -0.05) { const [gx, gz] = pondGrad(S.x, S.z), gl = Math.hypot(gx, gz) || 1; [S.x, S.z] = snapToSdf(S.x, S.z, -0.05); const vn = (S.vx * gx + S.vz * gz) / gl; if (vn > 0) { S.vx -= 1.6 * vn * gx / gl; S.vz -= 1.6 * vn * gz / gl; } }
+  for (const o of striders) {
+    if (o === S || o.st !== 'skate') continue;
+    const dx = S.x - o.x, dz = S.z - o.z, d = Math.hypot(dx, dz);
+    if (d < 0.045 && d > 1e-5) { S.vx += dx / d * 0.4 * dt; S.vz += dz / d * 0.4 * dt; }
+  }
+  if (S.stroke >= 0) { S.stroke += dt / 0.32; if (S.stroke >= 1) S.stroke = -1; }
+  const ph = S.stroke;
+  S.sweep = ph < 0 ? 0 : (ph < 0.28 ? smooth(0, 0.28, ph) : 1 - smooth(0.28, 1, ph)) * Math.min(1, (S.strokeAmp || 0.2) / 0.3);
+  S.y = waterH(S.x, S.z, t);
+  if (S.stay <= 0 && S.mode === 'rest' && S.alert < 0.05 && S.hunter === null) { strStats.left++; strTakeOff(S); }
+}
+function strUpdateFly(S, dt, t) {
+  const F = S.fly; F.t += dt; S.t += dt; S.wing += dt * 2 * Math.PI * 22;
+  const u = Math.min(F.t / F.dur, 1);
+  const ex = F.ex, ez = F.ez;
+  const mx = (F.sx + ex) / 2, mz = (F.sz + ez) / 2;
+  const x = (1 - u) * (1 - u) * F.sx + 2 * (1 - u) * u * mx + u * u * ex, z = (1 - u) * (1 - u) * F.sz + 2 * (1 - u) * u * mz + u * u * ez;
+  const side = Math.sin(u * Math.PI * 3 + F.wob) * 0.04 * Math.sin(u * Math.PI);
+  const c = Math.cos(S.yaw), s = Math.sin(S.yaw);
+  S.x = x - s * side; S.z = z + c * side;
+  if (!F.leave) {
+    // gliding down in a long slant, then dropping onto the water for the last bit
+    const wy = waterH(ex, ez, t);
+    S.y = lerp(F.sy, wy + 0.02, smooth(0, 0.9, u)) - (u > 0.9 ? (u - 0.9) / 0.1 * 0.02 : 0);
+    if (u >= 1) {
+      S.st = 'skate'; S.y = wy; S.vx = c * 0.12; S.vz = s * 0.12; S.mode = 'rest'; S.modeT = rr(1.5, 4); S.fly = null;
+      strFeet(S, _feet);
+      for (let i = 0; i < 6; i += 2) addDrop(_feet[i * 2], _feet[i * 2 + 1], 0.008, -0.00003);
+      addDrop(S.x, S.z, 0.01, -0.00006);
+      SFX.striderTap(S.x, S.z);
+    }
+  } else {
+    S.y = lerp(waterH(F.sx, F.sz, t) + 0.004, F.ey, smooth(0, 1, u)) + Math.sin(u * Math.PI) * 0.15;
+    if (u >= 1) S.st = 'gone';
+  }
+}
+const _stCen = [0, 0, 0];
+function updateStriders(dt, t) {
+  if (!strInit) { strInit = true; strSpawn(true); strSpawn(true); }
+  strSpawnT -= dt;
+  if (strSpawnT <= 0) { strSpawnT = rr(14, 34); strSpawn(false); }
+  for (const S of striders) {
+    if (S.st === 'skate') strUpdateSkate(S, dt, t);
+    else if (S.st === 'fly') strUpdateFly(S, dt, t);
+    else if (S.st === 'tongue') { S.t += dt; S.flail = 1; }
+    else if (S.st === 'mouth') { S.t += dt; S.flail = Math.max(0, 1 - S.mouthT / 0.5) * 0.7; S.mouthT += dt; if (S.mouthT > 0.45) S.st = 'gone'; }
+  }
+  for (let i = striders.length - 1; i >= 0; i--) if (striders[i].st === 'gone') { const S = striders[i]; if (S.hunter && S.hunter.prey === S) S.hunter.prey = null; striders.splice(i, 1); }
+  // feet into the water shading
+  let n = 0;
+  for (const S of striders) {
+    if (S.st !== 'skate' || n >= 4) continue;
+    strFeet(S, _feet);
+    G.uStrP.value[n].set(S.x, S.z, S.yaw, S.s);
+    for (let k = 0; k < 3; k++) G.uStrT.value[n * 3 + k].set(_feet[k * 2], _feet[k * 2 + 1], _feet[(k + 3) * 2], _feet[(k + 3) * 2 + 1]);
+    n++;
+  }
+  G.uStrN.value = n;
+}
+// all the thin moving things, rebuilt every frame: strider legs and antennae, wings, the frogs' tongues
+function drawStridersAndTongues(t) {
+  rvN = 0; riN = 0;
+  let ib = 0, wb = 0;
+  for (const S of striders) {
+    if (S.st === 'gone' || ib >= MAXSTRDRAW) continue;
+    _stCen[0] = S.x; _stCen[1] = S.z; _stCen[2] = waterH(S.x, S.z, t);
+    wb = strDraw(S, _stCen, ib * NSP, wb);
+    ib++;
+  }
+  strBodyGeo.instanceCount = ib * NSP;
+  strBA.needsUpdate = strBB.needsUpdate = strBC.needsUpdate = strBM.needsUpdate = true;
+  wingGeo.instanceCount = wb; wingA.needsUpdate = wingB.needsUpdate = true;
+  for (const f of frogs) if (f.tongue && f.tongue.e > 0.002) drawTongue(f);
+  dynRibGeo.setDrawRange(0, riN);
+  rvPA.needsUpdate = rvTA.needsUpdate = rvWA.needsUpdate = rvCA.needsUpdate = rvMA.needsUpdate = rvIA.needsUpdate = true;
+}
+
+// ================================================================= frogs hunting
+// a frog that sees a strider skating near its leaf turns to face it. Close enough, it opens its mouth and flicks out its
+// tongue; a little further, it leaps at where the strider is gliding to and takes it as it comes down into the water,
+// then swims back; further still, it may hop to a leaf nearer the strider. A strider that senses the attack in time
+// shoots away, so plenty of attempts miss. After a catch the frog swallows — pulling its eyes down into its head to push
+// the meal down — and wipes its mouth, and it is not hungry again for a while.
+const FROG_REACH = 0.05;                  // tongue reach for a frog of size 1 (m)
+const _hd = [0, 0, 0];
+function frogLocalFromHead(f, hx, hy, hz, out) {
+  const c = Math.cos(0.16), s = Math.sin(0.16), rx = hx - 0.018, ry = hy - 0.004;
+  const qx = c * rx + s * ry + 0.018, qy = -s * rx + c * ry + 0.004;
+  const cp = Math.cos(f.pitchB), sp = Math.sin(f.pitchB);
+  out[0] = f.bodyO[0] + cp * qx - sp * qy; out[1] = f.bodyO[1] + sp * qx + cp * qy; out[2] = hz;
+  return out;
+}
+// the front of the floor of the mouth, on the lower jaw (which drops as the mouth opens): where the tongue comes from
+function frogMouthWorld(f, out, inside = 0) {
+  const a = -f.mouth * 0.30, c = Math.cos(a), s = Math.sin(a), rx = 0.050 - inside - 0.0235, ry = -0.0040 + 0.0036;
+  frogLocalFromHead(f, c * rx - s * ry + 0.0235, s * rx + c * ry - 0.0036, 0, _hd);
+  return out.set(_hd[0], _hd[1], _hd[2]).applyMatrix4(f.world);
+}
+const tmpMouth = V3();
+function frogShootTongue(f, S, m) {
+  const lead = 0.05;
+  f.tongue = { t: 0, ext: 0.055, hold: 0.035, ret: 0.09, prey: S, tx: S.x + S.vx * lead, tz: S.z + S.vz * lead, ty: S.y + 0.003, hit: null, e: 0, x: m.x, y: m.y, z: m.z };
+  strStats.strikes++;
+  SFX.tongue(m.x, m.y, m.z);
+}
+// a leaf the frog can hop to that brings it closer to the strider
+function approachPad(f, S) {
+  const cur = pads[f.pad]; let best = -1, bd = Math.hypot(S.x - f.pos.x, S.z - f.pos.z) - 0.18;
+  for (let i = 0; i < NPAD; i++) {
+    if (i === f.pad || padTaken(i, f)) continue;
+    const p = pads[i], d = Math.hypot(p.x - cur.x, p.z - cur.z);
+    if (d < 0.22 || d > 0.8 || p.r < padMinR(f, 0.09) || p.age > 0.85) continue;
+    const ds = Math.hypot(S.x - p.x, S.z - p.z) - p.r * 0.6;
+    if (ds < bd && ds > 0.06) { bd = ds; best = i; }
+  }
+  return best;
+}
+// while sitting: spot, face and go for a strider. Returns true while the frog is busy with it
+function frogHuntSit(f, dt, t) {
+  f.huntCool -= dt; f.approachCool -= dt; f.edgeCool = (f.edgeCool || 0) - dt;
+  if (f.tongue || f.swallow > 0) return true;
+  if (f.fullT > 0) return false;
+  if (f.prey && (f.prey.st !== 'skate' || f.prey.hunter !== f)) f.prey = null;
+  if (!f.prey) {
+    if (f.huntCool > 0) return false;
+    let best = null, bs = 1e9;
+    for (const S of striders) {
+      if (S.st !== 'skate' || (S.hunter && S.hunter !== f)) continue;
+      const d = Math.hypot(S.x - f.pos.x, S.z - f.pos.z), moving = Math.hypot(S.vx, S.vz) > 0.04;
+      if (d < (moving ? 0.8 : 0.42) * Math.sqrt(f.size) && d < bs) { bs = d; best = S; }
+    }
+    if (!best) return false;
+    f.prey = best; best.hunter = f; f.huntT = 0; f.callN = 0; f.sac = 0; f.callT = Math.max(f.callT, 8);
+  }
+  const S = f.prey; f.huntT += dt;
+  const m = f.mouthW;
+  const dx = S.x - f.pos.x, dz = S.z - f.pos.z, dist = Math.hypot(dx, dz);
+  const md = Math.hypot(S.x - m.x, S.y - m.y, S.z - m.z);
+  const want = Math.atan2(dz, dx), err = Math.abs(wrapAngle(want - f.yaw));
+  f.yaw += wrapAngle(want - f.yaw) * (1 - Math.exp(-dt * (err > 0.6 ? 7 : 3.5)));
+  f.turn = 0;
+  const reach = FROG_REACH * f.size, lunge = 0.34 * Math.sqrt(f.size), sp = Math.hypot(S.vx, S.vz);
+  if (err < 0.3 && md < reach) { frogShootTongue(f, S, m); return true; }
+  // skating just off this leaf but out of reach: first a small, careful hop to the rim right by it
+  const p0 = pads[f.pad], dpc = Math.hypot(S.x - p0.x, S.z - p0.z);
+  if (!p0.lotus && dpc < p0.r + 0.09 && f.huntT > 0.3 && f.edgeCool <= 0) {
+    const a = Math.atan2(S.z - p0.z, S.x - p0.x), c = Math.cos(p0.rot), sn = Math.sin(p0.rot), ux = Math.cos(a), uz = Math.sin(a);
+    const lx = (c * ux + sn * uz) * 0.70, lz = (-sn * ux + c * uz) * 0.70;
+    const [ex, ez] = frogPadWorld(p0, lx, lz);
+    f.edgeCool = 1.2;
+    if (Math.hypot(ex - f.pos.x, ez - f.pos.z) > 0.025) { f.state = 'crouch'; f.t = 0; f.hunt = { prey: S, edge: [lx, lz] }; f.jumpTo = f.pad; return true; }
+  }
+  if (err < 0.13 && md < lunge && f.huntT > 0.4 && (sp < 0.12 || f.huntT > 1.8) && pondSDF(S.x, S.z) < -0.06) {
+    f.state = 'crouch'; f.t = 0; f.hunt = { prey: S }; f.jumpTo = f.pad; strStats.lunges++;
+    return true;
+  }
+  if (md > lunge && f.huntT > 0.9 && f.approachCool <= 0) {
+    f.approachCool = 4;
+    const tg = approachPad(f, S);
+    if (tg >= 0) { f.state = 'crouch'; f.t = 0; f.jumpTo = tg; return true; }
+  }
+  if (f.huntT > 10 || dist > 1.4) { S.hunter = null; f.prey = null; f.huntCool = rr(2, 5); return false; }
+  return true;
+}
+// the lunge: lead the target by its glide, aim the mouth at it, and go
+function frogLunge(f, S, t) {
+  const p0 = pads[f.pad];
+  const d0 = Math.hypot(S.x - f.pos.x, S.z - f.pos.z), T = 0.2 + d0 * 0.34, g = (1 - Math.exp(-2.3 * T)) / 2.3;
+  const px = S.x + S.vx * g, pz = S.z + S.vz * g;
+  const a = Math.atan2(pz - f.pos.z, px - f.pos.x), off = 0.033 * f.size;
+  let ex = px - Math.cos(a) * off, ez = pz - Math.sin(a) * off;
+  if (pondSDF(ex, ez) > -0.06) [ex, ez] = snapToSdf(ex, ez, -0.06);
+  const dist = Math.hypot(ex - f.pos.x, ez - f.pos.z);
+  f.jump = { sx: f.pos.x, sy: f.pos.y, sz: f.pos.z, ex, ez, lx: 0, lz: 0, dur: 0.17 + dist * 0.30, hgt: 0.02 + dist * 0.08, to: f.pad, water: true, hunt: S, tongued: false };
+  f.swimPlan = null; f.diving = false; f.jumpTo = f.pad; f.hunt = null;
+  p0.vb -= 0.02 * f.size * f.size;
+  SFX.hop(f.pos.x, f.pos.y, f.pos.z);
+  if (!p0.lotus) addDrop(p0.x, p0.z, p0.r * 1.15, -0.0016);
+  if (!frogs.some((o) => o !== f && o.pad === f.pad)) p0.weight = 1;
+  // the strider may feel it coming
+  strAlarm(S, f.pos.x, f.pos.z, 0.22 + 0.4 * S.alert);
+  f.state = 'air'; f.t = 0;
+}
+// the tongue in flight (any state): out to the target, stuck to the prey or not, and back in
+function frogTongueUpdate(f, dt, t) {
+  const T = f.tongue, tot = T.ext + T.hold + T.ret;
+  T.t += dt;
+  f.mouth = T.t < 0.03 ? Math.max(f.mouth, smooth(0, 0.03, T.t)) : T.t < tot ? 1 : 1 - smooth(tot, tot + 0.07, T.t);
+  const m = frogMouthWorld(f, tmpMouth);
+  if (T.hit === null && T.t >= T.ext) {
+    const S = T.prey, d = Math.hypot(S.x - T.tx, S.z - T.tz);
+    if (S.st === 'skate' && d < 0.010 + 0.004 * S.s) { T.hit = true; S.st = 'tongue'; S.hunter = f; SFX.tongueHit(T.tx, T.ty, T.tz); }
+    else {
+      T.hit = false; strStats.missed++;
+      addDrop(T.tx, T.tz, 0.01, -0.00035);
+      if (S.st === 'skate') { S.hunter = null; strFlee(S, m.x, m.z); }
+      if (f.prey === S) f.prey = null;
+      f.huntCool = rr(0.6, 1.6);
+    }
+  }
+  const e = T.t < T.ext ? 1 - Math.pow(1 - T.t / T.ext, 2.2) : T.t < T.ext + T.hold ? 1 : 1 - smooth(0, 1, (T.t - T.ext - T.hold) / T.ret);
+  T.e = Math.max(e, 0);
+  T.mx = m.x; T.my = m.y; T.mz = m.z;
+  T.x = lerp(m.x, T.tx, T.e); T.y = lerp(m.y, T.ty, T.e) + Math.sin(T.e * Math.PI) * 0.004 * f.size; T.z = lerp(m.z, T.tz, T.e);
+  if (T.hit) { const S = T.prey; S.x = T.x; S.y = T.y - 0.002; S.z = T.z; S.yaw += dt * 3; }
+  if (T.t >= tot && T.hit && T.prey.st === 'tongue') {
+    // in: the strider's legs stick out of the mouth for a moment as the frog gulps
+    const S = T.prey; S.st = 'mouth'; S.mouthT = 0; S.eater = f; strStats.eaten++;
+    f.swallow = 1.15; f.gulped = false; f.fullT = rr(30, 80); f.wipeSide = rnd() < 0.5 ? 1 : -1; f.prey = null;
+  }
+  if (T.t >= tot + 0.07) f.tongue = null;
+}
+function drawTongue(f) {
+  const T = f.tongue, n = 9, pts = [], ws = [];
+  const len = Math.hypot(T.x - T.mx, T.y - T.my, T.z - T.mz);
+  for (let i = 0; i < n; i++) {
+    const u = i / (n - 1);
+    pts.push([lerp(T.mx, T.x, u), lerp(T.my, T.y, u) + Math.sin(u * Math.PI) * len * 0.08, lerp(T.mz, T.z, u)]);
+    ws.push((u > 0.8 ? 0.0019 : 0.0012 - 0.0002 * u) * f.size);       // the sticky pad at the tip
+  }
+  rvLine(pts, ws, [0.72, 0.30, 0.33], 0.9, 0, null);
+}
+// eating: two big gulps with the eyes pulled down into the head, and a hand wiping the prey in
+function frogSwallow(f, dt) {
+  if (f.swallow <= 0) { f.wipe = Math.max(0, f.wipe - dt * 4); return; }
+  f.swallow -= dt;
+  const u = 1 - f.swallow / 1.15;
+  const g1 = Math.sin(clamp((u - 0.22) / 0.3, 0, 1) * Math.PI), g2 = Math.sin(clamp((u - 0.6) / 0.3, 0, 1) * Math.PI) * 0.85;
+  f.blink = Math.max(f.blink, Math.max(g1, g2) * 0.96);
+  f.throat = Math.max(f.throat, Math.max(g1, g2));
+  const onLeaf = f.state === 'sit' || f.state === 'land';
+  f.wipe = onLeaf ? Math.sin(clamp((u - 0.05) / 0.5, 0, 1) * Math.PI) : 0; f.wipePh = clamp((u - 0.12) / 0.36, 0, 1);
+  if (!f.tongue) f.mouth = u < 0.3 ? 0.22 * (1 - smooth(0.2, 0.3, u)) : 0;
+  if (u > 0.22 && !f.gulped) { f.gulped = true; SFX.frogGulp(f.pos.x, f.pos.y + 0.02, f.pos.z, f.size); }
+}
+
+function updateParticles(dt) {
+  const A = partAttr.array; let n = 0;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    p.vy -= 9.81 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.life -= dt;
+    if (p.y < 0 && p.vy < 0) { if (rnd() < 0.5) addDrop(p.x, p.z, 0.012, -0.00012); parts.splice(i, 1); continue; }   // tiny drops get boosted to the sim's minimum ring size
+    if (p.life <= 0) { parts.splice(i, 1); continue; }
+  }
+  for (const p of parts) { A[n * 4] = p.x; A[n * 4 + 1] = p.y; A[n * 4 + 2] = p.z; A[n * 4 + 3] = p.s; n++; }
+  partGeo.instanceCount = n; partAttr.needsUpdate = true;
+  const F = foodAttr.array; let m = 0;
+  for (let i = food.length - 1; i >= 0; i--) {
+    const f = food[i]; f.age += dt;
+    if (!f.landed) { f.vy -= 9.81 * dt; f.y += f.vy * dt; f.x += f.vx * dt; f.z += f.vz * dt; if (f.y <= 0.002) { f.landed = true; f.y = 0.002; if (pondSDF(f.x, f.z) > -0.34) [f.x, f.z] = snapToSdf(f.x, f.z, -0.34); addDrop(f.x, f.z, 0.022, -0.0018); splash(f.x, 0.004, f.z, 4, 0.25, 0.0025); SFX.plip(f.x, f.z, 1); strDisturb(f.x, f.z, 0.12, 0.6); } }
+    else {
+      // slow surface current: wind push plus a wandering swirl, so floating pellets visibly creep and turn
+      const tt2 = G.uTime.value, sw = 6.2832 * vnoise(f.x * 0.35 + tt2 * 0.05, f.z * 0.35 - tt2 * 0.04 + f.age * 0.02) * 1.5;
+      f.vx += (G.uWind.value.x * 0.010 + Math.cos(sw) * 0.014 - f.vx) * Math.min(1, dt * 1.2);
+      f.vz += (G.uWind.value.y * 0.010 + Math.sin(sw) * 0.014 - f.vz) * Math.min(1, dt * 1.2);
+      const sdf = pondSDF(f.x, f.z);
+      if (sdf > -0.6) { const [gx, gz] = pondGrad(f.x, f.z); const k2 = (sdf + 0.6) * 0.08; f.vx -= gx * k2 * dt * 3; f.vz -= gz * k2 * dt * 3; }
+      f.x += f.vx * dt; f.z += f.vz * dt;
+    }
+    if (f.age > 45 || pondSDF(f.x, f.z) > -0.17) food.splice(i, 1);
+  }
+  const tt = G.uTime.value;
+  for (const f of food) { F[m * 4] = f.x; F[m * 4 + 1] = f.landed ? waterH(f.x, f.z, tt) + 0.0003 : f.y; F[m * 4 + 2] = f.z; F[m * 4 + 3] = FOOD_R; m++; }
+  foodGeo.instanceCount = m; foodAttr.needsUpdate = true;
+}
+
+// (no ambient ripples: every ring on the water has a visible cause)
+function ambient(dt) {}
+
+// ---------------------------------------------------------------- wind gusts: grass and susuki bow, trees shed a flurry, the water darkens
+const gust = { v: 0, t: 0, dur: 0, peak: 0, next: rr(14, 28), shed: 0 };
+function updateFlowers(dt) {
+  const target = FLOWER_CLOSE_AT[lightName] ?? 0;
+  FLOWER_CLOSE.value += (target - FLOWER_CLOSE.value) * (1 - Math.exp(-dt / 5));
+}
+function updateGust(dt, t) {
+  gust.next -= dt;
+  if (gust.dur <= 0 && gust.next < 0) { gust.dur = rr(3.0, 5.5); gust.t = 0; gust.peak = rr(0.55, 1.0); gust.next = rr(25, 55); gust.shed = Math.round(rr(6, 13) * gust.peak); }
+  let g = 0;
+  if (gust.dur > 0) {
+    gust.t += dt; const u = gust.t / gust.dur;
+    g = gust.peak * Math.pow(Math.sin(Math.PI * Math.min(u, 1)), 2);
+    if (gust.shed > 0 && u > 0.2 && rnd() < dt * 4) { if (rnd() < 0.3) spawnSamara(); else spawnFallLeaf(); gust.shed--; }
+    if (u >= 1) gust.dur = 0;
+  }
+  gust.v = g;
+  G.uWindK.value = g + 0.12 * vnoise(t * 0.13, 3.7);
+  G.uGust.value = 1.0 + 0.6 * g;
+}
+
+// ---------------------------------------------------------------- falling leaves
+let fallT = 1.0, fallInit = false;
+function newLeaf(x, y, z, col, kind = 0) {
+  const a = rr(0, TAU);
+  return { kind, st: 'air', t: 0, x, y, z, vx: 0, vz: 0, yaw: rr(0, TAU), spin: rr(-2.5, 2.5), tx: 0, tz: 0, size: rr(0.032, 0.042), col, seed: rnd(),
+    ow: rr(2.2, 3.6), oA: rr(0.10, 0.24), oPh: rr(0, TAU), odx: Math.cos(a), odz: Math.sin(a), v0: rr(0.55, 0.9),
+    wet: 0, fade: 1, life: 0, by: -1, pad: -1, lx: 0, lz: 0, lyaw: 0, dip: 0 };
+}
+function spawnFallLeaf() {
+  if (fallen.length >= MAXFALL) return;
+  // trees that have turned further shed more; of a few random sprays, the one reaching furthest over the water lets go
+  let tot = 0; for (const t of TREE_DEF) tot += 0.15 + t.autumn;
+  let r = rnd() * tot, ti = 0;
+  for (; ti < TREE_DEF.length - 1; ti++) { r -= 0.15 + TREE_DEF[ti].autumn; if (r <= 0) break; }
+  const list = treeLeaves[ti]; if (!list.length) return;
+  let bi = list[0], bs = 1e9;
+  for (let k = 0; k < 5; k++) { const i = list[Math.floor(rnd() * list.length)]; const sd = pondSDF(leafI[i][0], leafI[i][2]); if (sd < bs) { bs = sd; bi = i; } }
+  const l = leafI[bi];
+  const [gx, gz] = pondGrad(l[0], l[2]), gl = Math.hypot(gx, gz) || 1, glide = rnd() < 0.75 ? rr(0.18, 0.42) : rr(0, 0.12);
+  fallen.push(Object.assign(newLeaf(l[0] + rr(-0.12, 0.12), l[1] + rr(-0.1, 0.05), l[2] + rr(-0.12, 0.12), clamp(l[6] + rr(0.15, 0.45), 0.35, 1)), { gvx: -gx / gl * glide, gvz: -gz / gl * glide }));   // the ones that let go have turned
+}
+// sasanqua petals: they fall one by one, tumbling, and pile up pink under the shrub
+function spawnPetal(sh, initial) {
+  if (fallen.length >= MAXFALL) return;
+  const p = sh.flowers[Math.floor(rnd() * sh.flowers.length)];
+  const L = newLeaf(p[0] + rr(-0.02, 0.02), p[1], p[2] + rr(-0.02, 0.02), sh.kind, 2);
+  L.size = rr(0.014, 0.019); L.v0 = rr(0.3, 0.45); L.oA = rr(0.06, 0.14); L.ow = rr(3.0, 4.5); L.spin = rr(-4, 4);
+  if (initial) { const a = rr(0, TAU), d = Math.sqrt(rnd()) * 0.75; L.x = sh.x + Math.cos(a) * d; L.z = sh.z + Math.sin(a) * d; }
+  fallen.push(L);
+  return L;
+}
+// maple samaras: they let go one at a time, spin up within a fraction of a second and helicopter straight down
+let samaraT = 3.0;
+function spawnSamara() {
+  if (fallen.length >= MAXFALL) return;
+  let tot = 0; for (const t of TREE_DEF) tot += 0.1 + t.autumn;
+  let r = rnd() * tot, ti = 0;
+  for (; ti < TREE_DEF.length - 1; ti++) { r -= 0.1 + TREE_DEF[ti].autumn; if (r <= 0) break; }
+  const list = treeLeaves[ti]; if (!list.length) return;
+  let bi = list[0], bs = 1e9;
+  for (let k = 0; k < 5; k++) { const i = list[Math.floor(rnd() * list.length)]; const sd = pondSDF(leafI[i][0], leafI[i][2]); if (sd < bs) { bs = sd; bi = i; } }
+  const l = leafI[bi];
+  const S = newLeaf(l[0] + rr(-0.1, 0.1), l[1] + rr(-0.1, 0.05), l[2] + rr(-0.1, 0.1), rnd(), 1);
+  S.size = rr(0.014, 0.017); S.spin = (rnd() < 0.5 ? -1 : 1) * rr(24, 34); S.v0 = rr(0.85, 1.15);
+  fallen.push(S);
+}
+function leafToPad(L, pi) {
+  const p = pads[pi], dx = L.x - p.x, dz = L.z - p.z, c = Math.cos(p.rot), s = Math.sin(p.rot);
+  L.st = 'pad'; L.pad = pi; L.t = 0; L.life = rr(12, 40);
+  L.lx = (c * dx + s * dz) / p.r; L.lz = (-s * dx + c * dz) / p.r;
+  const m = Math.hypot(L.lx, L.lz); if (m > 0.8) { L.lx *= 0.8 / m; L.lz *= 0.8 / m; }
+  L.lyaw = L.yaw - p.rot;
+}
+function slopeTilt(L) { const e = 0.03; L.tx = -(terrainH(L.x + e, L.z) - terrainH(L.x - e, L.z)) / (2 * e); L.tz = -(terrainH(L.x, L.z + e) - terrainH(L.x, L.z - e)) / (2 * e); }
+// some leaves are already down when the page opens: afloat, resting on pads, lying on the bottom
+function initFallen() {
+  fallInit = true;
+  // a pink carpet of fallen petals already lies under each sasanqua
+  for (const sh of SAZANKA) for (let i = 0; i < 26; i++) {
+    const L = spawnPetal(sh, true); if (!L) break;
+    const sd = pondSDF(L.x, L.z);
+    if (sd < -0.04) { L.st = 'water'; L.life = rr(30, 120); L.t = rr(5, 40); L.spin = 0; }
+    else { L.st = 'ground'; L.y = terrainH(L.x, L.z) + 0.004; L.life = rr(60, 220); L.t = 0; slopeTilt(L); }
+  }
+  const colOf = () => clamp(TREE_DEF[Math.floor(rnd() * TREE_DEF.length)].autumn + rr(0.15, 0.45), 0.35, 1);
+  let onPad = 0;
+  for (let i = 0, tries = 0; i < 18 && tries < 500; tries++) {
+    const x = rr(DOMAIN.x, DOMAIN.x + DOMAIN.w), z = rr(DOMAIN.z, DOMAIN.z + DOMAIN.h), sd = pondSDF(x, z);
+    if (sd > -0.06 || sd < -1.4) continue;
+    const pi = padAt(x, z, -1, 0.03), L = rnd() < 0.2 ? Object.assign(newLeaf(x, 0, z, rnd(), 1), { size: rr(0.014, 0.017) }) : newLeaf(x, 0, z, colOf());
+    if (pi >= 0) { if (onPad >= 3 || frogs.some((f) => f.pad === pi)) continue; leafToPad(L, pi); onPad++; }
+    else { L.st = 'water'; L.life = rr(30, 140); L.t = rr(12, 60); L.wet = rr(0, 0.5); L.spin = 0; }
+    fallen.push(L); i++;
+  }
+  for (let i = 0, tries = 0; i < 6 && tries < 300; tries++) {
+    const x = rr(DOMAIN.x, DOMAIN.x + DOMAIN.w), z = rr(DOMAIN.z, DOMAIN.z + DOMAIN.h);
+    if (pondSDF(x, z) > -0.3) continue;
+    const L = newLeaf(x, terrainH(x, z) + 0.003, z, colOf());
+    L.st = 'floor'; L.life = rr(30, 80); L.wet = 1; slopeTilt(L); fallen.push(L); i++;
+  }
+}
+function updateFallLeaves(dt, t) {
+  if (!fallInit) initFallen();
+  fallT -= dt;
+  if (fallT < 0) { fallT = rr(1.6, 4.5); spawnFallLeaf(); }
+  samaraT -= dt;
+  if (samaraT < 0) { samaraT = rr(4, 9); spawnSamara(); }
+  for (const sh of SAZANKA) { sh.petT -= dt * (1 + 6 * G.uWindK.value); if (sh.petT < 0) { sh.petT = rr(2.5, 6); spawnPetal(sh); } }
+  const wx = G.uWind.value.x, wz = G.uWind.value.y, wk = G.uWindK.value;
+  for (let i = fallen.length - 1; i >= 0; i--) {
+    const L = fallen[i]; L.t += dt;
+    if (L.st === 'air' && L.kind === 1) {
+      // autorotation: the wing cones up a little and the seed corkscrews down at a steady speed
+      const ramp = Math.min(1, L.t / 0.35), drift = 0.06 + 0.4 * wk;
+      L.yaw += L.spin * ramp * dt;
+      L.y -= L.v0 * (0.45 + 0.55 * ramp) * dt;
+      L.x += (wx * drift + Math.cos(L.yaw) * 0.05 * ramp) * dt;
+      L.z += (wz * drift + Math.sin(L.yaw) * 0.05 * ramp) * dt;
+      L.tx = -0.3 * Math.sin(L.yaw) * ramp; L.tz = 0.3 * Math.cos(L.yaw) * ramp;
+    }
+    if (L.st === 'air') {
+      if (L.kind !== 1) {
+        // pendulum glide: swings side to side, dropping fastest through the bottom of each swing, tilted into it
+        const ph = L.oPh + L.ow * L.t, sw = Math.sin(ph), cw = Math.cos(ph);
+        const drift = 0.08 + 0.45 * wk;
+        L.x += (wx * drift + (L.gvx || 0) + L.odx * L.oA * L.ow * cw) * dt;
+        L.z += (wz * drift + (L.gvz || 0) + L.odz * L.oA * L.ow * cw) * dt;
+        L.y -= L.v0 * (0.45 + 0.75 * cw * cw) * dt;
+        L.tx = L.odx * 0.85 * sw; L.tz = L.odz * 0.85 * sw;
+        L.yaw += L.spin * dt;
+      }
+      const sd = pondSDF(L.x, L.z);
+      const gy = sd < 0 ? waterH(L.x, L.z, t) : terrainH(L.x, L.z) + 0.004;
+      if (L.y <= gy + 0.003) {
+        L.tx = L.tz = 0; L.t = 0;
+        let pi = sd < 0 ? padAt(L.x, L.z, -1, -0.015) : -1;
+        if (pi >= 0 && frogs.some((f) => f.pad === pi && f.state !== 'swim')) {   // a frog is sitting there: it slips off the rim instead
+          const p = pads[pi], dx = L.x - p.x, dz = L.z - p.z, d = Math.hypot(dx, dz) || 1;
+          L.x = p.x + dx / d * (p.r + L.size * 0.8); L.z = p.z + dz / d * (p.r + L.size * 0.8); pi = -1;
+        }
+        if (pi >= 0) leafToPad(L, pi);
+        else if (sd < -0.03) { L.st = 'water'; L.life = rr(70, 150); L.vx = wx * 0.03; L.vz = wz * 0.03; L.spin *= 0.15; addDrop(L.x, L.z, 0.018, -0.0005); SFX.plip(L.x, L.z, L.kind === 1 ? 0.15 : 0.25); }
+        else { L.st = 'ground'; L.y = terrainH(L.x, L.z) + 0.004; L.life = L.kind === 2 ? rr(60, 200) : rr(20, 40); slopeTilt(L); }
+      } else if (L.t > 30) { fallen.splice(i, 1); continue; }
+      if (L.kind === 1 && L.st !== 'air') { L.spin = rr(-0.5, 0.5); L.size *= 1.0; }
+    } else if (L.st === 'water') {
+      // drift: the wind on the leaf plus the slow swirl of the surface current; the shore catches them
+      const sw2 = TAU * vnoise(L.x * 0.35 + t * 0.05, L.z * 0.35 - t * 0.04 + L.seed * 7) * 1.5;
+      const push = 0.014 + 0.05 * wk, kk = Math.min(1, dt * 0.9);
+      L.vx += (wx * push + Math.cos(sw2) * 0.012 - L.vx) * kk;
+      L.vz += (wz * push + Math.sin(sw2) * 0.012 - L.vz) * kk;
+      const sp = Math.hypot(L.vx, L.vz); if (sp > 0.25) { L.vx *= 0.25 / sp; L.vz *= 0.25 / sp; }
+      L.x += L.vx * dt; L.z += L.vz * dt;
+      L.spin = L.spin * Math.exp(-dt * 0.8) + (vnoise(t * 0.3 + L.seed * 20, L.seed * 3) - 0.5) * 0.5 * dt;
+      L.yaw += L.spin * dt;
+      if (pondSDF(L.x, L.z) > -0.05) { [L.x, L.z] = snapToSdf(L.x, L.z, -0.05); L.vx *= 0.3; L.vz *= 0.3; }
+      for (let j = 0; j < floaters.length; j++) {
+        const p = floaters[j], dx = L.x - p.x, dz = L.z - p.z, R = p.r + L.size * 0.7, d2 = dx * dx + dz * dz;
+        if (d2 < R * R) { const d = Math.sqrt(d2) || 1e-4; L.x = p.x + dx / d * R; L.z = p.z + dz / d * R; L.vx += (p.vx - L.vx) * 0.3; L.vz += (p.vz - L.vz) * 0.3; }
+      }
+      L.dip = Math.max(0, L.dip - dt * 1.5);
+      L.wet = Math.min(1, L.wet + dt / 100);
+      if (L.t > L.life) { L.st = 'sink'; L.t = 0; L.y = -0.006; }
+    } else if (L.st === 'pad') {
+      const p = pads[L.pad];
+      const [x, z] = frogPadWorld(p, L.lx, L.lz);
+      L.x = x; L.z = z; L.y = frogGroundY(p, x, z, t) + 0.0015; L.yaw = L.lyaw + p.rot;
+      if (L.t > L.life || (wk > 0.6 && rnd() < dt * 0.6)) {
+        // blown off the rim into the water
+        const dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz) || 1;
+        L.x = p.x + dx / d * (p.r + L.size * 0.8); L.z = p.z + dz / d * (p.r + L.size * 0.8);
+        if (pondSDF(L.x, L.z) > -0.05) [L.x, L.z] = snapToSdf(L.x, L.z, -0.06);
+        L.st = 'water'; L.t = 0; L.life = rr(60, 140); L.vx = dx / d * 0.05 + wx * 0.03; L.vz = dz / d * 0.05 + wz * 0.03; L.by = -2;
+      }
+    } else if (L.st === 'sink') {
+      // waterlogged: glides down through the water in slow swings
+      const ph = L.oPh + 1.3 * L.t, cw = Math.cos(ph);
+      L.y -= (0.010 + 0.008 * cw * cw) * dt;
+      L.x += (L.odx * 0.008 * cw + L.vx * 0.2) * dt; L.z += (L.odz * 0.008 * cw + L.vz * 0.2) * dt;
+      L.tx = 0.45 * Math.sin(ph) * L.odx; L.tz = 0.45 * Math.sin(ph) * L.odz;
+      L.wet = Math.min(1, L.wet + dt / 25);
+      const fl = terrainH(L.x, L.z) + 0.003;
+      if (L.y <= fl) { L.y = fl; L.st = 'floor'; L.t = 0; L.life = rr(40, 90); slopeTilt(L); }
+    } else {
+      L.fade = clamp((L.life - L.t) / 10, 0, 1);
+      if (L.t > L.life) { fallen.splice(i, 1); continue; }
+    }
+  }
+  // afloat they jostle instead of stacking; koi near the surface and swimming frogs shove them aside
+  const fl = fallen.filter((L) => L.st === 'water');
+  for (let a = 0; a < fl.length; a++) for (let b = a + 1; b < fl.length; b++) {
+    const A = fl[a], B = fl[b], dx = B.x - A.x, dz = B.z - A.z, R = (A.size + B.size) * 0.75, d2 = dx * dx + dz * dz;
+    if (d2 < R * R && d2 > 1e-10) { const d = Math.sqrt(d2), q = (R - d) * 0.5; A.x -= dx / d * q; A.z -= dz / d * q; B.x += dx / d * q; B.z += dz / d * q; }
+  }
+  for (const L of fl) {
+    for (const k of koi) {
+      if (k.pos.y < -0.13) continue;
+      const c = Math.cos(k.yaw), s = Math.sin(k.yaw), rx = L.x - k.pos.x, rz = L.z - k.pos.z;
+      if (rx * rx + rz * rz > 0.5) continue;
+      const along = clamp(rx * c + rz * s, -0.5 * k.L, 0.5 * k.L), qx = rx - c * along, qz = rz - s * along, d = Math.hypot(qx, qz), R = 0.07 * k.L + L.size;
+      if (d < R) { const f = (R - d) / R * dt * 8; L.vx += (qx / (d + 1e-4) * 0.1 + c * k.speed * 0.6) * f; L.vz += (qz / (d + 1e-4) * 0.1 + s * k.speed * 0.6) * f; L.spin += (rnd() - 0.5) * f * 4; }
+    }
+    for (const f of frogs) {
+      if (f.state !== 'swim') continue;
+      const dx = L.x - f.pos.x, dz = L.z - f.pos.z, d = Math.hypot(dx, dz), R = 0.05 * f.size + L.size;
+      if (d < R) { const q = (R - d) / R * dt * 8 * 0.6; L.vx += dx / (d + 1e-4) * q; L.vz += dz / (d + 1e-4) * q; }
+    }
+  }
+  const A = fallA.array, B = fallB.array, C = fallC.array; let n = 0;
+  for (const L of fallen) {
+    const o = n * 4;
+    A[o] = L.x; A[o + 1] = L.y; A[o + 2] = L.z; A[o + 3] = L.size;
+    B[o] = L.tx + L.dip * 0.5 * Math.sin(L.t * 9); B[o + 1] = L.tz; B[o + 2] = L.yaw; B[o + 3] = L.col;
+    C[o] = L.st === 'water' ? 1 : 0; C[o + 1] = L.wet; C[o + 2] = L.fade; C[o + 3] = L.kind + Math.min(L.seed, 0.999);
+    n++;
+  }
+  fallGeo.instanceCount = n; fallA.needsUpdate = fallB.needsUpdate = fallC.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------- duckweed, water chestnut, cattail fluff
+function updateDuck(dt, t) {
+  for (const R of duckRafts) {
+    R.movers.length = 0;
+    for (const k of koi) {
+      const st = smooth(-0.30, -0.07, k.pos.y); if (st <= 0.01) continue;      // only koi near the surface disturb the mat
+      if (Math.hypot(k.pos.x - R.cx, k.pos.z - R.cz) > R.rad + k.L) continue;
+      // a grazing koi sucks in what is in front of its mouth instead of pushing it away
+      const c = Math.cos(k.yaw), sn = Math.sin(k.yaw), back = k.duck ? 0.14 * k.L : 0;
+      R.movers.push({ x: k.pos.x - c * back, z: k.pos.z - sn * back, c, s: sn, h: 0.5 * k.L - back, rad: (0.05 + 0.10 * k.L) * (0.6 + 0.4 * st), sp: k.speed, st });
+    }
+    for (const f of frogs) {
+      if (f.state !== 'swim' || Math.hypot(f.pos.x - R.cx, f.pos.z - R.cz) > R.rad + 0.1) continue;
+      R.movers.push({ x: f.pos.x, z: f.pos.z, c: Math.cos(f.yaw), s: Math.sin(f.yaw), h: 0.03 * f.size, rad: 0.04 * f.size, sp: f.swim.v, st: 1 });
+    }
+    R.nearT -= dt;
+    if (R.nearT <= 0) { R.nearT = 0.5; R.near = floaters.filter((p) => Math.hypot(p.x - R.cx, p.z - R.cz) < R.rad + p.r + 0.25); }
+  }
+  const A = duckAttr.array, M = maskDiscAttr.array; let m = maskN;
+  const damp = Math.exp(-dt * 2.4);
+  for (let i = 0; i < NDUCK; i++) {
+    const d = duck[i], R = duckRafts[d.raft];
+    if (d.eat > 0) {
+      // eaten: gone in a gulp, then after a while new fronds have grown or drifted back in
+      d.eat -= dt; d.vis = Math.max(0, d.vis - dt * 5);
+      if (d.eat <= 0) { d.x = d.hx; d.z = d.hz; d.vx = d.vz = 0; d.vis = 0.02; d.grow = true; }
+    } else {
+      if (d.grow) { d.vis = Math.min(1, d.vis + dt / 4); if (d.vis >= 1) d.grow = false; }
+      let fx = (d.hx - d.x) * 0.22, fz = (d.hz - d.z) * 0.22;
+      for (const mv of R.movers) {
+        const rx = d.x - mv.x, rz = d.z - mv.z;
+        const al = clamp(rx * mv.c + rz * mv.s, -mv.h, mv.h);
+        const qx = rx - mv.c * al, qz = rz - mv.s * al, q2 = qx * qx + qz * qz, rad = mv.rad + d.r * 0.6;
+        if (q2 < rad * rad) { const q = Math.sqrt(q2) + 1e-5, pen = (rad - q) / rad * mv.st; fx += (qx / q * 7 + mv.c * mv.sp * 4) * pen; fz += (qz / q * 7 + mv.s * mv.sp * 4) * pen; }
+      }
+      d.vx = (d.vx + fx * dt) * damp; d.vz = (d.vz + fz * dt) * damp;
+      d.x += d.vx * dt; d.z += d.vz * dt;
+      for (const p of R.near) {
+        const dx = d.x - p.x, dz = d.z - p.z, rr2 = p.r + d.r * 0.3, q2 = dx * dx + dz * dz;
+        if (q2 < rr2 * rr2) { const q = Math.sqrt(q2) + 1e-5; d.x = p.x + dx / q * rr2; d.z = p.z + dz / q * rr2; }
+      }
+      if (pondSDF(d.x, d.z) > -0.025) { [d.x, d.z] = snapToSdf(d.x, d.z, -0.03); d.vx *= 0.3; d.vz *= 0.3; }
+    }
+    A[i * 4] = d.x; A[i * 4 + 1] = d.z; A[i * 4 + 2] = d.r * d.vis; A[i * 4 + 3] = d.seed;
+    if (d.vis > 0.3 && m < MAXMASK) { M[m * 4] = d.x; M[m * 4 + 1] = d.z; M[m * 4 + 2] = d.r * 1.1; M[m * 4 + 3] = 0.75; m++; }
+  }
+  duckAttr.needsUpdate = true;
+  maskN = m;
+}
+let maskN = 0;
+function updateHishi() {
+  const M = maskDiscAttr.array; let m = 0;
+  hishi.forEach((h, i) => {
+    uHishi.value[i].set(h.x, h.z, h.rot, h.bob);
+    M[m * 4] = h.x; M[m * 4 + 1] = h.z; M[m * 4 + 2] = h.r * 0.85; M[m * 4 + 3] = 0.85; m++;
+  });
+  maskN = m;
+}
+function hishiAt(x, z, margin) { for (const h of hishi) if (Math.hypot(h.x - x, h.z - z) < h.r + margin) return true; return false; }
+// seed fluff: stripped from the ripe spikes by the wind, carried across the pond, settling on the water
+function spikePoint(q, t) {
+  const wx = G.uWind.value.x, wz = G.uWind.value.y, wk = G.uWindK.value;
+  let dx = Math.cos(q.az) * q.lean + wx * (0.02 + 0.14 * wk), dz = Math.sin(q.az) * q.lean + wz * (0.02 + 0.14 * wk);
+  const v = rr(0.80, 0.90);
+  return [q.x + dx * q.H * v * v + rr(-0.012, 0.012), q.y + q.H * v, q.z + dz * q.H * v * v + rr(-0.012, 0.012)];
+}
+function updateFluff(dt, t) {
+  const wx = G.uWind.value.x, wz = G.uWind.value.y, wk = G.uWindK.value;
+  for (const q of typhaS) {
+    if (!q.burst) continue;
+    q.emit -= dt * (0.25 + 14 * wk * wk) * q.burst;
+    if (q.emit < 0 && fluff.length < MAXFLUFF) {
+      q.emit += rr(0.5, 1.5);
+      const [x, y, z] = spikePoint(q, t);
+      fluff.push({ st: 'air', x, y, z, vx: 0, vy: 0, vz: 0, r: rr(0.0055, 0.0085), seed: rnd(), spin: rr(0, TAU), a: 0, t: 0, life: 0 });
+    }
+  }
+  for (let i = fluff.length - 1; i >= 0; i--) {
+    const f = fluff[i]; f.t += dt;
+    if (f.st === 'air') {
+      // a pappus rides the air almost without lag: wind, eddies, gentle updrafts, and a slow fall
+      const ex = vnoise(f.x * 1.3 + t * 0.35, f.z * 1.3 + 3.1) - 0.5, ez = vnoise(f.x * 1.3 + 7.7, f.z * 1.3 - t * 0.35) - 0.5, ey = vnoise(f.x * 0.9 - t * 0.3, f.z * 0.9 + 11.0 + f.seed) - 0.5;
+      const ws = 0.10 + 0.9 * wk, k = Math.min(1, dt * 2.5);
+      f.vx += (wx * ws + ex * 0.3 - f.vx) * k; f.vz += (wz * ws + ez * 0.3 - f.vz) * k;
+      f.vy += (-0.075 + ey * (0.12 + 0.25 * wk) - f.vy) * k;
+      f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;
+      f.a = Math.min(1, f.t * 3);
+      const sd = pondSDF(f.x, f.z), gy = sd < 0 ? waterH(f.x, f.z, t) : terrainH(f.x, f.z);
+      if (f.y <= gy + 0.002) { f.st = sd < -0.02 ? 'water' : 'ground'; f.t = 0; f.life = sd < -0.02 ? rr(25, 55) : rr(3, 7); }
+      if (f.t > 90 || Math.abs(f.x) > 9 || Math.abs(f.z) > 8) { fluff.splice(i, 1); continue; }
+    } else if (f.st === 'water') {
+      const sw = TAU * vnoise(f.x * 0.35 + t * 0.05, f.z * 0.35 - t * 0.04 + f.seed * 5) * 1.5, k = Math.min(1, dt);
+      f.vx += (wx * (0.012 + 0.05 * wk) + Math.cos(sw) * 0.012 - f.vx) * k; f.vz += (wz * (0.012 + 0.05 * wk) + Math.sin(sw) * 0.012 - f.vz) * k;
+      f.x += f.vx * dt; f.z += f.vz * dt;
+      if (pondSDF(f.x, f.z) > -0.03) [f.x, f.z] = snapToSdf(f.x, f.z, -0.035);
+      f.y = waterH(f.x, f.z, t) + 0.0012;
+      f.a = clamp((f.life - f.t) / 6, 0, 1) * 0.9;
+      if (f.t > f.life) { fluff.splice(i, 1); continue; }
+    } else {
+      f.a = clamp((f.life - f.t) / 2, 0, 1);
+      if (f.t > f.life) { fluff.splice(i, 1); continue; }
+    }
+  }
+  const A = fluffA.array, B = fluffB.array; let n = 0;
+  for (const f of fluff) {
+    A[n * 4] = f.x; A[n * 4 + 1] = f.y; A[n * 4 + 2] = f.z; A[n * 4 + 3] = f.r;
+    B[n * 4] = f.a; B[n * 4 + 1] = f.seed; B[n * 4 + 2] = f.spin + f.t * 0.8; B[n * 4 + 3] = f.st === 'water' ? 1 : 0;
+    n++;
+  }
+  fluffGeo.instanceCount = n; fluffA.needsUpdate = fluffB.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------- lotus leaves, their water beads, and the willow's trailing tips
+function updateLotus(dt, t) {
+  const wx = G.uWind.value.x, wz = G.uWind.value.y, wk = G.uWindK.value;
+  const A = beadAttr.array; let nb = 0;
+  const M = maskDiscAttr.array; let m = maskN;
+  for (const L of lotus) {
+    if (L.H > 0) {
+      // the same sway as the stalk ribbons, so the leaf stays on top of its stalk
+      const s1 = 0.010 + 0.028 * wk, s2 = (0.006 + 0.06 * wk) * (0.8 + 0.2 * Math.sin(t * 2.1 + L.ph));
+      const dX = Math.sin(t * 1.3 + L.ph) * s1 + wx * s2, dZ = Math.cos(t * 1.07 + L.ph * 1.7) * s1 + wz * s2;
+      const h = L.H - 0.005, k = h * h * 4;
+      L.vb += (-L.bob * 40 - L.vb * 5) * dt; L.bob += L.vb * dt;
+      L.x = L.x0 + dX * k; L.z = L.z0 + dZ * k; L.y = L.H - 0.25 * (dX * dX + dZ * dZ) * k + L.bob;
+      // it tips the way its stalk leans, and flutters in a gust
+      L.tx = L.tx0 + dX * k / L.H * 0.8 + Math.sin(t * 3.1 + L.ph) * 0.05 * wk;
+      L.tz = L.tz0 + dZ * k / L.H * 0.8 + Math.cos(t * 2.7 + L.ph) * 0.05 * wk;
+    } else {
+      L.y = waterH(L.x, L.z, t) + 0.002 + L.bob; L.tx = L.tx0 * 0.2; L.tz = L.tz0 * 0.2;   // drifting with the lily pads
+      if (m < MAXMASK) { M[m * 4] = L.x; M[m * 4 + 1] = L.z; M[m * 4 + 2] = L.r * 0.9; M[m * 4 + 3] = 0.9; m++; }
+    }
+    uLotA.value[L.i].set(L.x, L.y, L.z, L.r); uLotB.value[L.i].set(L.tx, L.tz, L.cup, L.rot); uLotC.value[L.i].set(L.wave, L.waveN, L.waveP, L.age);
+    if (L.H <= 0) continue;
+    // water beads roll downhill on the wax towards the middle and merge into the pool there; a tilting leaf sends
+    // them rolling, and some go over the edge into the pond
+    const fr = frogs.filter((f) => pads[f.pad] === L && f.state !== 'air' && f.state !== 'swim');
+    for (let i = L.drops.length - 1; i >= 0; i--) {
+      const b = L.drops[i], e = 0.004, h0 = lotusLocalH(L, b.x, b.z);
+      const gx = (lotusLocalH(L, b.x + e, b.z) - h0) / e, gz = (lotusLocalH(L, b.x, b.z + e) - h0) / e;
+      b.vx += (-gx * 9.81 * 0.5 - b.vx * 1.6) * dt; b.vz += (-gz * 9.81 * 0.5 - b.vz * 1.6) * dt;
+      for (const f of fr) { const dx = L.x + b.x - f.pos.x, dz = L.z + b.z - f.pos.z, d = Math.hypot(dx, dz), R = 0.035 * f.size; if (d < R) { b.x += dx / (d || 1) * (R - d); b.z += dz / (d || 1) * (R - d); } }
+      b.x += b.vx * dt; b.z += b.vz * dt;
+      const r = Math.hypot(b.x, b.z);
+      if (r > L.r * 0.96) { const wxp = L.x + b.x * 1.05, wzp = L.z + b.z * 1.05; if (pondSDF(wxp, wzp) < 0) { addDrop(wxp, wzp, 0.012, -0.0005); SFX.plip(wxp, wzp, 0.5); } L.drops.splice(i, 1); continue; }
+      if (r < 0.01 + 0.006 * Math.cbrt(L.pool)) { L.pool += Math.pow(b.r / 0.004, 3) * 0.25; L.drops.splice(i, 1); continue; }
+      if (nb < MAXBEAD) { A[nb * 4] = L.x + b.x; A[nb * 4 + 1] = L.y + h0; A[nb * 4 + 2] = L.z + b.z; A[nb * 4 + 3] = b.r; nb++; }
+    }
+    // the pool in the middle: it slides a little when the leaf tips, and spills when it tips hard
+    const tilt = Math.hypot(L.tx, L.tz);
+    if (tilt > 0.2 && L.pool > 0.8 && rnd() < dt * 2.5) { L.pool -= 0.4; L.drops.push({ x: -L.tx / tilt * 0.02, z: -L.tz / tilt * 0.02, vx: -L.tx / tilt * 0.25, vz: -L.tz / tilt * 0.25, r: rr(0.003, 0.0045) }); }
+    L.respawn -= dt;
+    if (L.respawn < 0 && L.drops.length < 10) { L.respawn = rr(8, 25); const a = rr(0, TAU), d = rr(0.3, 0.85) * L.r; L.drops.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, vx: 0, vz: 0, r: rr(0.002, 0.004) }); }
+    const pr = 0.0045 * Math.cbrt(Math.max(L.pool, 0.05));
+    if (nb < MAXBEAD && L.pool > 0.05) { const px = -L.tx * 0.06, pz = -L.tz * 0.06; A[nb * 4] = L.x + px; A[nb * 4 + 1] = L.y + lotusLocalH(L, px, pz) - pr * 0.35; A[nb * 4 + 2] = L.z + pz; A[nb * 4 + 3] = pr; nb++; }
+  }
+  beadGeo.instanceCount = nb; beadAttr.needsUpdate = true;
+  maskN = m;
+}
+function updateWillow(dt, t) {
+  const wx = G.uWind.value.x, wz = G.uWind.value.y, wk = G.uWindK.value;
+  for (const w of willowTips) {
+    const s1 = 0.025 + 0.05 * wk, s2 = (0.03 + 0.32 * wk) * (0.8 + 0.2 * Math.sin(t * 1.7 + w.ph));
+    const k = Math.pow(w.depth, 1.3);
+    const x = w.x + (Math.sin(t * 0.85 + w.ph) * s1 + wx * s2) * k, z = w.z + (Math.cos(t * 0.7 + w.ph * 1.3) * s1 + wz * s2) * k;
+    const sp = w.px === undefined ? 0 : Math.hypot(x - w.px, z - w.pz) / Math.max(dt, 1e-3); w.px = x; w.pz = z;
+    w.t -= dt;
+    // a trailing tip draws little rings as it is dragged through the surface
+    if (w.t <= 0 && sp > 0.02 && pondSDF(x, z) < -0.02) { w.t = rr(0.5, 1.4) / (0.4 + Math.min(sp * 4, 1.5)); addDrop(x, z, 0.02, -0.0006 * Math.min(sp * 6, 1.5)); }
+  }
+}
+
+// ---------------------------------------------------------------- eelgrass springs
+function updateWeeds(dt) {
+  const A = weedC.array;
+  for (let i = 0; i < NWEED; i++) {
+    const w = weeds[i];
+    let fx = -18 * w.bx - 3.2 * w.vx, fz = -18 * w.bz - 3.2 * w.vz;
+    const top = Math.min(w.y + w.len, -0.01);
+    for (const k of koi) {
+      if (k.pos.y > top + 0.05 || k.pos.y < w.y) continue;
+      const rx = w.x + w.bx * 0.6 - k.pos.x, rz = w.z + w.bz * 0.6 - k.pos.z;
+      if (rx * rx + rz * rz > 0.6) continue;
+      const c = Math.cos(k.yaw), s = Math.sin(k.yaw);
+      const along = clamp(rx * c + rz * s, -0.55 * k.L, 0.45 * k.L);
+      const qx = rx - c * along, qz = rz - s * along, d = Math.hypot(qx, qz), R = 0.05 + 0.11 * k.L;
+      if (d < R) {
+        // shoved aside by the body and dragged along in its wake
+        const pen = (R - d) / R;
+        fx += (qx / (d + 1e-4)) * pen * 9 + c * k.speed * pen * 6;
+        fz += (qz / (d + 1e-4)) * pen * 9 + s * k.speed * pen * 6;
+      }
+    }
+    w.vx += fx * dt; w.vz += fz * dt; w.bx += w.vx * dt; w.bz += w.vz * dt;
+    const m = Math.hypot(w.bx, w.bz), lim = w.len * 0.6;
+    if (m > lim) { w.bx *= lim / m; w.bz *= lim / m; }
+    A[i * 4] = w.bx; A[i * 4 + 1] = w.bz;
+  }
+  weedC.needsUpdate = true;
+}
+
+// ================================================================= frame
+let simAcc = 0;
+function update(dt) {
+  const t = (G.uTime.value += dt);
+  stepLight(dt);
+  updateCamera(dt);
+  updatePads(dt, t);
+  updateKoi(dt, t);
+  updateFrogs(dt, t);
+  updateStriders(dt, t);
+  drawStridersAndTongues(t);
+  updateGust(dt, t);
+  updateFlowers(dt);
+  updateFallLeaves(dt, t);
+  updateWeeds(dt);
+  updateHishi();
+  updateDuck(dt, t);
+  updateLotus(dt, t);
+  updateWillow(dt, t);
+  maskDiscGeo.instanceCount = maskN; maskDiscAttr.needsUpdate = true;
+  updateFluff(dt, t);
+  sndUpdate(dt);
+  writePadAttrs(t);
+  updateParticles(dt);
+  ambient(dt);
+}
+let PROF = null;
+const glc = renderer.getContext();
+const _px = new Uint8Array(4);
+const syncRT = new THREE.WebGLRenderTarget(1, 1);
+function mark(name) { if (!PROF) return; renderer.setRenderTarget(syncRT); glc.readPixels(0, 0, 1, 1, glc.RGBA, glc.UNSIGNED_BYTE, _px); const t = performance.now(); PROF.push([name, t - PROF.t]); PROF.t = t; }
+function render(dt) {
+  // 1. pad mask (top-down)
+  renderer.setRenderTarget(padMaskRT); renderer.setClearColor(0x000000, 1); renderer.clear(true, false, false);
+  camera.layers.set(LAYER.MASK); renderer.render(scene, camera);
+  mark('mask');
+  // 2. wave equation (fixed 60 Hz)
+  simAcc += dt; let n = 0;
+  applyDrops();
+  while (simAcc >= 1 / 60 && n < 3) { simStep(); simAcc -= 1 / 60; n++; if (dropQueue.length) applyDrops(); }
+  if (n === 3) simAcc = 0;
+  surfMat.uniforms.uSim.value = simA.texture;
+  mark('sim');
+  // 3. surface
+  runPass(surfMat, surfRT);
+  mark('surface');
+  // 3b. sun shadow map
+  renderShadow();
+  mark('shadow');
+  // 4. caustics
+  renderer.setRenderTarget(causRaw); renderer.setClearColor(0x000000, 1); renderer.clear(true, false, false);
+  renderer.render(causScene, fsCam);
+  mark('caustic-grid');
+  runPass(causBlurMat, causRT);
+  mark('caustic-blur+mip');
+  // 5. reflection
+  updateReflectCamera();
+  G.uPass.value = 1;
+  renderer.setRenderTarget(reflRT); renderer.setClearColor(0x000000, 1); renderer.clear(true, true, false);
+  renderer.render(scene, reflCam);
+  mark('reflection');
+  // 6. refraction (underwater)
+  G.uPass.value = 2;
+  renderer.setRenderTarget(refrRT); renderer.setClearColor(new THREE.Color(0.03, 0.06, 0.05), 1); renderer.clear(true, true, false);
+  camera.layers.set(LAYER.REFR); renderer.render(scene, camera);
+  mark('refraction');
+  // 7. main
+  G.uPass.value = 0;
+  renderer.setRenderTarget(mainRT); renderer.setClearColor(0x000000, 1); renderer.clear(true, true, false);
+  camera.layers.set(LAYER.MAIN); renderer.render(scene, camera);
+  mark('main');
+  // 8. bloom + composite
+  const W = mainRT.width, H = mainRT.height;
+  brightMat.uniforms.uTex.value = mainRT.texture; brightMat.uniforms.uTexel.value.set(1 / W, 1 / H);
+  runPass(brightMat, bloomRTs[0]);
+  for (let i = 1; i < bloomRTs.length; i++) {
+    downMat.uniforms.uTex.value = bloomRTs[i - 1].texture; downMat.uniforms.uTexel.value.set(1 / bloomRTs[i - 1].width, 1 / bloomRTs[i - 1].height);
+    runPass(downMat, bloomRTs[i]);
+  }
+  for (let i = bloomRTs.length - 1; i > 0; i--) {
+    upMat.uniforms.uTex.value = bloomRTs[i].texture; upMat.uniforms.uTexel.value.set(1 / bloomRTs[i].width, 1 / bloomRTs[i].height);
+    runPass(upMat, bloomRTs[i - 1]);
+  }
+  mark('bloom');
+  // depth of field (frog / low views)
+  dof.ap = lerp(dof.ap, dof.apGoal, 1 - Math.exp(-dt * 3));
+  if (dof.ap > 0.02) {
+    const du = dofMat.uniforms;
+    du.uTex.value = mainRT.texture; du.uDepth.value = mainRT.depthTexture;
+    du.uTexel.value.set(1 / mainRT.width, 1 / mainRT.height);
+    du.uNear.value = camera.near; du.uFar.value = camera.far; du.uFocus.value = dof.focus; du.uAperture.value = dof.ap;
+    du.uMaxR.value = Math.round(mainRT.height / 54);
+    runPass(dofMat, dofRT);
+    finalMat.uniforms.uDof.value = dofRT.texture; finalMat.uniforms.uDofOn.value = 1;
+  } else finalMat.uniforms.uDofOn.value = 0;
+  finalMat.uniforms.uTex.value = mainRT.texture; finalMat.uniforms.uBloom.value = bloomRTs[0].texture;
+  finalMat.uniforms.uExposure.value = exposure;
+  renderer.setViewport(0, 0, renderer.domElement.width / renderer.getPixelRatio(), renderer.domElement.height / renderer.getPixelRatio());
+  runPass(finalMat, null);
+  mark('final');
+}
+
+// ================================================================= sound
+// everything is synthesised with Web Audio, nothing is downloaded: a bed of wind, rustling leaves and lapping water,
+// autumn insects in the grass, a few birds in the maples, the tree frogs' calls, and the sounds of what happens in
+// the pond (pellets, koi gulping, frogs hopping and diving), each placed in stereo and distance around the camera
+const SND = { ctx: null, on: true, ok: false, voices: 0, amb: null, tOver: null, started: false, vol: 0.7 };
+try {
+  SND.on = localStorage.getItem('pond-sound') !== 'off';
+  const v = parseFloat(localStorage.getItem('pond-volume')); if (isFinite(v)) SND.vol = clamp(v, 0, 1);
+} catch (e) { /* storage blocked: defaults */ }
+const volGain = () => 1.8 * SND.vol * SND.vol;          // the slider works on a roughly perceptual (squared) scale
+const sNow = () => (SND.tOver !== null ? SND.tOver : SND.ctx.currentTime + 0.012);
+function noiseBuf(c, sec, kind) {
+  const n = Math.floor(c.sampleRate * sec), b = c.createBuffer(1, n, c.sampleRate), d = b.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, last = 0;
+  for (let i = 0; i < n; i++) {
+    const w = Math.random() * 2 - 1;
+    if (kind === 1) {          // pink (Paul Kellet's filter)
+      b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.969 * b2 + w * 0.153852;
+      b3 = 0.8665 * b3 + w * 0.3104856; b4 = 0.55 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.016898;
+      d[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11; b6 = w * 0.115926;
+    } else if (kind === 2) {   // brown
+      last = (last + 0.02 * w) / 1.02; d[i] = last * 3.5;
+    } else d[i] = w;
+  }
+  return b;
+}
+// a small garden: a few early reflections off stones and banks, then a short tail that darkens as it dies away
+function sndImpulse(c, sec) {
+  const n = Math.floor(c.sampleRate * sec), b = c.createBuffer(2, n, c.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = b.getChannelData(ch); let lp = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / c.sampleRate;
+      const k = 0.08 + 0.85 * Math.exp(-t / 0.2);
+      lp += (Math.random() * 2 - 1 - lp) * k;
+      d[i] = lp * Math.exp(-t / 0.3) * Math.min(1, t / 0.006) * 0.5;
+    }
+    for (let r = 0; r < 7; r++) { const i = Math.floor(c.sampleRate * (0.007 + Math.random() * 0.06)); d[i] += (Math.random() < 0.5 ? -1 : 1) * 0.45 * Math.exp(-i / c.sampleRate / 0.05); }
+  }
+  return b;
+}
+function sndGraph(c) {
+  const master = c.createGain(); master.gain.value = 0;
+  const comp = c.createDynamicsCompressor();
+  comp.threshold.value = -14; comp.knee.value = 10; comp.ratio.value = 3; comp.attack.value = 0.004; comp.release.value = 0.25;
+  master.connect(comp); comp.connect(c.destination);
+  const bus = c.createGain(); bus.connect(master);
+  const rev = c.createConvolver(); rev.buffer = sndImpulse(c, 1.6);
+  const revG = c.createGain(); revG.gain.value = 0.5; rev.connect(revG); revG.connect(master);
+  // a buzz with a flat spectrum (a train of narrow pulses), the raw material of croaks and harsh bird notes
+  const real = new Float32Array(56), imag = new Float32Array(56);
+  for (let i = 1; i < 56; i++) imag[i] = i < 36 ? 1 : (56 - i) / 20;
+  const buzz = c.createPeriodicWave(real, imag);
+  return { master, bus, rev, buzz, white: noiseBuf(c, 3, 0), pink: noiseBuf(c, 7, 1), brown: noiseBuf(c, 7, 2) };
+}
+// a sound source somewhere in the scene: distance falloff, air absorption, stereo position, a little of the garden's echo
+const _sr = V3();
+function sndAt(x, y, z, gain, wet = 0.2, dur = 1) {
+  const c = SND.ctx; if (!c || !SND.ok || SND.voices > 30) return null;
+  const cp = camera.position, dx = x - cp.x, dy = y - cp.y, dz = z - cp.z, d = Math.hypot(dx, dy, dz);
+  const g = gain * 2.0 / (2.0 + d);
+  if (g < 0.004) return null;
+  _sr.setFromMatrixColumn(camera.matrixWorld, 0);
+  const pan = clamp((dx * _sr.x + dy * _sr.y + dz * _sr.z) / Math.max(d, 0.05), -1, 1) * 0.8;
+  const inp = c.createGain(); inp.gain.value = g;
+  const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = Math.max(1500, 17000 / (1 + d * 0.25)); lp.Q.value = 0.5;
+  inp.connect(lp);
+  if (c.createStereoPanner) { const pn = c.createStereoPanner(); pn.pan.value = pan; lp.connect(pn); pn.connect(SND.bus); } else lp.connect(SND.bus);
+  const send = c.createGain(); send.gain.value = wet * (0.5 + Math.min(d, 10) * 0.08); lp.connect(send); send.connect(SND.rev);
+  SND.voices++;
+  if (SND.tOver === null) setTimeout(() => { SND.voices--; }, (dur + 0.3) * 1000); else SND.voices--;
+  return inp;
+}
+function sTone(dest, t, dur, f0, f1, amp, type = 'sine', att = 0.005) {
+  const c = SND.ctx, o = c.createOscillator(), g = c.createGain();
+  if (type === 'buzz') o.setPeriodicWave(SND.buzz); else o.type = type;
+  o.frequency.setValueAtTime(f0, t); if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(amp, t + att); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.03);
+  return o;
+}
+function sNoise(dest, t, dur, type, freq, q, amp, att = 0.002, buf = 'white') {
+  const c = SND.ctx, s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+  s.buffer = SND[buf]; f.type = type; f.frequency.setValueAtTime(freq, t); f.Q.value = q;
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(amp, t + att); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(dest);
+  s.start(t, Math.random() * Math.max(0, s.buffer.duration - dur - 0.1)); s.stop(t + dur + 0.03);
+  return f;
+}
+// a bubble: a ringing chirp rising in pitch as it collapses or pops (a sine and a resonant noise band together)
+function sBubble(dest, t, f0, f1, dur, amp, att = 0.0015) {
+  sTone(dest, t, dur, f0, f1, amp, 'sine', att);
+  const f = sNoise(dest, t, dur * 1.1, 'bandpass', f0, 9, amp * 1.6, att);
+  f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+}
+// water closing back and sloshing: a soft band of noise that sinks in pitch, with a wobble
+function sSlosh(dest, t, dur, f0, f1, amp, att = 0.02) {
+  const f = sNoise(dest, t, dur, 'bandpass', f0, 0.9, amp, att, 'pink');
+  f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  return f;
+}
+// a few droplets falling back onto the surface
+function sDroplets(dest, t, n, spread, amp) {
+  for (let i = 0; i < n; i++) { const tt = t + rr(0.03, spread), f0 = rr(1500, 2600); sBubble(dest, tt, f0, f0 * rr(1.5, 2.1), rr(0.018, 0.032), amp * rr(0.5, 1)); }
+}
+const SFX = {
+  // a pellet or a leaf touching the water: a tiny drop ringing with its bubble
+  plip(x, z, amp = 1) {
+    const d = sndAt(x, 0, z, 0.3 * amp, 0.15, 0.3); if (!d) return; const t = sNow();
+    const f0 = rr(1000, 1400);
+    sBubble(d, t, f0, f0 * rr(1.8, 2.3), 0.04, 0.4);
+    sNoise(d, t, 0.02, 'bandpass', 3800, 1.2, 0.18);
+  },
+  // a koi taking something off the surface: the same kind of soft little "plip" as a pellet landing, only a bit
+  // rounder and lower, then the water closing over the spot and a faint lap — no hard edges
+  gulp(x, z, L, amp = 1) {
+    const d = sndAt(x, 0, z, 0.42 * amp, 0.18, 0.5); if (!d) return; const t = sNow();
+    const s = 1 / Math.pow(L / 0.5, 0.3), f0 = rr(650, 900) * s, f1 = rr(1100, 1500);
+    sBubble(d, t, f0, f0 * rr(1.8, 2.2), 0.05, 0.38, 0.004);
+    sNoise(d, t, 0.025, 'bandpass', 3200, 1.0, 0.1, 0.004);
+    sBubble(d, t + rr(0.06, 0.09), f1, f1 * rr(1.8, 2.2), 0.035, 0.18, 0.004);
+    sSlosh(d, t + 0.02, 0.2, 700, 450, 0.08, 0.04);
+  },
+  // a frog diving in head first: "pochan" — the splash, the deep ring of the air it drags down, the water
+  // closing over it and the droplets falling back
+  plunk(x, z, size) {
+    const d = sndAt(x, 0, z, 0.8, 0.28, 0.8); if (!d) return; const t = sNow();
+    const s = 1 / Math.pow(size, 0.5);
+    sNoise(d, t, 0.06, 'bandpass', 1600, 0.9, 0.5, 0.001);
+    sBubble(d, t + 0.012, 300 * s, 760 * s, 0.11, 0.7);
+    sBubble(d, t + 0.07, 520 * s, 1050 * s, 0.05, 0.3);
+    sSlosh(d, t + 0.03, 0.45, 1100, 360, 0.36);
+    sDroplets(d, t + 0.08, 4 + Math.floor(rnd() * 3), 0.35, 0.16);
+  },
+  // landing on a lily pad: a soft slap, and the leaf smacking down on the water — a little "pochan"
+  pat(x, y, z, size) {
+    const d = sndAt(x, y, z, 0.55, 0.2, 0.6); if (!d) return; const t = sNow();
+    const s = 1 / Math.pow(size, 0.5);
+    sTone(d, t, 0.05, 140 * s, 90 * s, 0.45, 'sine', 0.002);
+    sNoise(d, t, 0.04, 'bandpass', 1300, 0.9, 0.4, 0.001);
+    sBubble(d, t + 0.015, 380 * s, 900 * s, 0.075, 0.5);
+    sSlosh(d, t + 0.02, 0.3, 900, 400, 0.24);
+    sDroplets(d, t + 0.05, 2 + Math.floor(rnd() * 2), 0.2, 0.11);
+  },
+  // a koi sweeping its tail just under the surface in a feeding rush: a soft swirl of water, like a hand paddling,
+  // no sharp edges at all — it swells in and fades away
+  paddle(x, z, L, amp = 1) {
+    const d = sndAt(x, 0, z, 0.32 * amp, 0.22, 0.9); if (!d) return; const t = sNow();
+    const s = 1 / Math.sqrt(L / 0.5), dur = rr(0.4, 0.6);
+    const f = sNoise(d, t, dur, 'bandpass', rr(330, 430) * s, 0.7, 0.5, rr(0.1, 0.16), 'pink');
+    f.frequency.exponentialRampToValueAtTime(rr(650, 850) * s, t + dur * 0.55);
+    const g = sNoise(d, t + rr(0.06, 0.12), dur * 0.9, 'lowpass', 520 * s, 0.5, 0.3, 0.14, 'brown');
+    g.frequency.exponentialRampToValueAtTime(300 * s, t + dur);
+  },
+  // a bubble a koi lets go of, rising and opening at the surface: a soft, round "blub"
+  blub(x, z) {
+    const d = sndAt(x, 0, z, 0.16, 0.15, 0.3); if (!d) return; const t = sNow();
+    const f0 = rr(380, 620);
+    sTone(d, t, rr(0.05, 0.07), f0, f0 * rr(1.4, 1.7), 0.35, 'sine', 0.008);
+  },
+  // landing on a lotus leaf held up out of the water: a soft, papery thump with a little shiver of the leaf
+  lotusPat(x, y, z, size) {
+    const d = sndAt(x, y, z, 0.45, 0.15, 0.4); if (!d) return; const t = sNow();
+    sTone(d, t, 0.06, 125 / Math.sqrt(size), 80 / Math.sqrt(size), 0.45, 'sine', 0.003);
+    sNoise(d, t, 0.07, 'bandpass', 1700, 0.8, 0.22, 0.004, 'pink');
+  },
+  // a tongue flicked out: a soft, quick, wet "tsk"
+  tongue(x, y, z) {
+    // a soft, wet flick — no hard edge to it
+    const d = sndAt(x, y, z, 0.3, 0.12, 0.3); if (!d) return; const t = sNow();
+    sNoise(d, t, 0.04, 'bandpass', 1700, 1.2, 0.42, 0.006, 'pink');
+    sTone(d, t + 0.004, 0.035, 820, 480, 0.12, 'sine', 0.006);
+  },
+  tongueHit(x, y, z) {
+    const d = sndAt(x, y, z, 0.18, 0.1, 0.2); if (!d) return; const t = sNow();
+    sNoise(d, t, 0.018, 'bandpass', 2600, 1.5, 0.32, 0.003, 'pink');
+  },
+  // swallowing: a small, soft gulp
+  frogGulp(x, y, z, size) {
+    const d = sndAt(x, y, z, 0.32, 0.1, 0.4); if (!d) return; const t = sNow();
+    const s = 1 / Math.sqrt(size);
+    sTone(d, t, 0.08, 240 * s, 130 * s, 0.4, 'sine', 0.01);
+    sNoise(d, t, 0.06, 'lowpass', 700 * s, 0.7, 0.18, 0.01, 'pink');
+  },
+  // a strider dropping onto the water: the faintest tick
+  striderTap(x, z) {
+    const d = sndAt(x, 0, z, 0.08, 0.08, 0.15); if (!d) return; const t = sNow();
+    sNoise(d, t, 0.014, 'bandpass', 4600, 1.4, 0.25, 0.003);
+  },
+  // its wings: a thin, soft buzz
+  striderWings(x, y, z, dur) {
+    const d = sndAt(x, y, z, 0.05, 0.1, dur); if (!d) return; const t = sNow(), c = SND.ctx;
+    const o = c.createOscillator(), g = c.createGain(), fl = c.createBiquadFilter();
+    o.setPeriodicWave(SND.buzz); o.frequency.value = rr(85, 110);
+    fl.type = 'bandpass'; fl.frequency.value = 900; fl.Q.value = 0.8;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.25, t + 0.2); g.gain.setValueAtTime(0.25, t + dur * 0.7); g.gain.linearRampToValueAtTime(0, t + dur);
+    o.connect(fl); fl.connect(g); g.connect(d); o.start(t); o.stop(t + dur + 0.05);
+  },
+  hop(x, y, z) {
+    const d = sndAt(x, y, z, 0.2, 0.08, 0.2); if (!d) return; const t = sNow();
+    sNoise(d, t, 0.06, 'bandpass', 2400, 1.0, 0.35, 0.002);
+  },
+  // one swimming kick at the surface: a soft "chapu" — water lapping round the legs and a few little bubbles gurgling
+  // off the feet (no airy rising whoosh)
+  swish(x, z, amp, size = 1) {
+    const d = sndAt(x, 0, z, 0.3 * Math.max(amp, 0.35), 0.14, 0.5); if (!d) return; const t = sNow();
+    const s = 1 / Math.sqrt(size);
+    // the lap: a short, low, liquid knock with a little muffled body, and the water settling back (falling, not rising)
+    const f0 = rr(210, 270) * s;
+    sTone(d, t, 0.07, f0, f0 * 0.75, 0.22, 'sine', 0.008);
+    sNoise(d, t, 0.09, 'lowpass', 650 * s, 0.6, 0.3, 0.01, 'brown');
+    sSlosh(d, t + 0.02, 0.14, rr(750, 900) * s, rr(340, 420) * s, 0.16, 0.012);
+    // the gurgle: a quick cluster of small bubbles
+    const n = 3 + Math.floor(rnd() * 4);
+    for (let i = 0; i < n; i++) {
+      const tt = t + rr(0.015, 0.16), b0 = rr(520, 1250) * s;
+      sBubble(d, tt, b0, b0 * rr(1.3, 1.8), rr(0.022, 0.045), rr(0.1, 0.2), 0.004);
+    }
+    if (amp > 0.7 && rnd() < 0.4) sDroplets(d, t + 0.06, 2, 0.14, 0.07);
+  },
+  climb(x, z) {
+    const d = sndAt(x, 0, z, 0.35, 0.18, 0.6); if (!d) return; const t = sNow();
+    sNoise(d, t, 0.05, 'bandpass', 1500, 0.9, 0.3, 0.002);
+    sSlosh(d, t, 0.25, 1000, 500, 0.25, 0.01);
+    sDroplets(d, t + 0.05, 3 + Math.floor(rnd() * 3), 0.3, 0.14);
+  },
+  // one "ge" of a tree frog's call: a buzz of pulses ringing through the inflated vocal sac
+  croak(f) {
+    const d = sndAt(f.pos.x, f.pos.y + 0.02, f.pos.z, 0.9, 0.35, 0.4); if (!d) return; const c = SND.ctx, t = sNow();
+    const s = f.size, rate = 112 / Math.sqrt(s) * rr(0.96, 1.04);
+    const o = c.createOscillator(); o.setPeriodicWave(SND.buzz);
+    o.frequency.setValueAtTime(rate * 1.06, t); o.frequency.linearRampToValueAtTime(rate * 0.9, t + 0.13);
+    const b1 = c.createBiquadFilter(); b1.type = 'bandpass'; b1.frequency.value = 2200 / Math.pow(s, 0.35); b1.Q.value = 4.5;
+    const b2 = c.createBiquadFilter(); b2.type = 'bandpass'; b2.frequency.value = 3400 / Math.pow(s, 0.35); b2.Q.value = 6;
+    const g = c.createGain(), g2 = c.createGain(); g2.gain.value = 0.55;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.5, t + 0.012); g.gain.setValueAtTime(0.5, t + 0.075); g.gain.exponentialRampToValueAtTime(0.0005, t + 0.14);
+    o.connect(b1); b1.connect(g); o.connect(b2); b2.connect(g2); g2.connect(g); g.connect(d);
+    o.start(t); o.stop(t + 0.16);
+  },
+};
+// ---------------------------------------------------------------- the soundscape: birds in the maples, insects in the grass
+function birdSpot() { const c = canopy[Math.floor(rnd() * canopy.length)]; return [c.c[0] + rr(-0.5, 0.5), c.c[1] + rr(-0.2, 0.5), c.c[2] + rr(-0.5, 0.5)]; }
+const BIRDS = {
+  // ヒヨドリ (brown-eared bulbul): a loud, shrill "pii-yo"
+  bulbul() {
+    const [x, y, z] = birdSpot(); const d = sndAt(x, y, z, 0.5, 0.45, 3); if (!d) return; const t0 = sNow();
+    const n = 1 + Math.floor(rnd() * 3);
+    for (let i = 0; i < n; i++) {
+      const t = t0 + i * rr(0.7, 0.95), k = rr(0.95, 1.05);
+      sTone(d, t, 0.2, 2500 * k, 3900 * k, 0.5, 'sine', 0.02);
+      sTone(d, t, 0.2, 5000 * k, 7800 * k, 0.06, 'sine', 0.02);
+      sTone(d, t + 0.22, 0.32, 3700 * k, 2100 * k, 0.45, 'sine', 0.015);
+      sTone(d, t + 0.22, 0.32, 7400 * k, 4200 * k, 0.05, 'sine', 0.015);
+    }
+  },
+  // モズの高鳴き (a shrike's autumn territorial call): "kii kii" and a rattling "kichikichikichi"
+  shrike() {
+    const [x, y, z] = birdSpot(); const d = sndAt(x, y, z, 0.42, 0.45, 3); if (!d) return; let t = sNow();
+    for (let i = 0; i < 2; i++) { sTone(d, t, 0.13, 3400, 3050, 0.3, 'buzz', 0.01); t += rr(0.26, 0.34); }
+    t += 0.08;
+    const n = 5 + Math.floor(rnd() * 4);
+    for (let i = 0; i < n; i++) { sTone(d, t, 0.045, 4300, 2900, 0.26, 'buzz', 0.004); t += 0.068; }
+  },
+  // メジロ (white-eye): thin "chii" contact calls from the leaves
+  whiteeye() {
+    const [x, y, z] = birdSpot(); const d = sndAt(x, y, z, 0.24, 0.35, 1.5); if (!d) return; let t = sNow();
+    const n = 1 + Math.floor(rnd() * 3);
+    for (let i = 0; i < n; i++) { sTone(d, t, 0.07, rr(5600, 6200), rr(4900, 5300), 0.4, 'sine', 0.006); t += rr(0.12, 0.3); }
+  },
+};
+// autumn insects sing from the grass around the pond: スズムシ ("riiin") and エンマコオロギ ("korokoro-rii")
+const INSECTS = [];
+for (let i = 0; i < 6; i++) { const p = polarAt(rr(0, TAU), rr(0.35, 1.3)); INSECTS.push({ kind: i < 3 ? 'suzu' : 'emma', x: p.x, y: terrainH(p.x, p.z) + 0.02, z: p.z, bout: rr(2, 12), sing: false, next: rr(0, 2), pitch: rr(0.96, 1.04) }); }
+function insectNote(b) {
+  const d = sndAt(b.x, b.y, b.z, 0.16, 0.25, 1); if (!d) return; const c = SND.ctx, t = sNow();
+  if (b.kind === 'suzu') {
+    // a pure trill near 4.5 kHz, beaten into pulses by the wings
+    const o = c.createOscillator(); o.frequency.value = 4400 * b.pitch;
+    const am = c.createOscillator(); am.frequency.value = 36;
+    const amg = c.createGain(); amg.gain.value = 0.5; const g = c.createGain(); g.gain.value = 0.5;
+    am.connect(amg); amg.connect(g.gain);
+    const env = c.createGain(); env.gain.setValueAtTime(0, t); env.gain.linearRampToValueAtTime(0.6, t + 0.05); env.gain.setValueAtTime(0.6, t + 0.38); env.gain.linearRampToValueAtTime(0, t + 0.48);
+    o.connect(g); g.connect(env); env.connect(d);
+    o.start(t); am.start(t); o.stop(t + 0.5); am.stop(t + 0.5);
+  } else {
+    // "korokoro" pulses, then a short trill
+    let tt = t;
+    for (let i = 0; i < 4; i++) { sTone(d, tt, 0.035, 4700 * b.pitch, 4500 * b.pitch, 0.45, 'sine', 0.004); tt += 0.06; }
+    const o = c.createOscillator(); o.frequency.value = 4650 * b.pitch;
+    const am = c.createOscillator(); am.frequency.value = 55;
+    const amg = c.createGain(); amg.gain.value = 0.5; const g = c.createGain(); g.gain.value = 0.5;
+    am.connect(amg); amg.connect(g.gain);
+    const env = c.createGain(); env.gain.setValueAtTime(0, tt); env.gain.linearRampToValueAtTime(0.4, tt + 0.03); env.gain.linearRampToValueAtTime(0, tt + 0.3);
+    o.connect(g); g.connect(env); env.connect(d);
+    o.start(tt); am.start(tt); o.stop(tt + 0.32); am.stop(tt + 0.32);
+  }
+}
+const sndT = { bulbul: rr(6, 20), shrike: rr(25, 60), whiteeye: rr(2, 6), rustle: 0 };
+function sndAmbience(c) {
+  const A = {};
+  const loop = (buf, rate = 1) => { const s = c.createBufferSource(); s.buffer = SND[buf]; s.loop = true; s.playbackRate.value = rate; s.start(SND.tOver ?? 0, Math.random() * (s.buffer.duration - 0.1)); return s; };
+  // wind: a low roar and a higher whoosh, both swelling with the gusts
+  A.wl = c.createBiquadFilter(); A.wl.type = 'lowpass'; A.wl.frequency.value = 450; A.wl.Q.value = 0.4;
+  A.wg = c.createGain(); A.wg.gain.value = 0.05;
+  loop('pink').connect(A.wl); A.wl.connect(A.wg); A.wg.connect(SND.bus);
+  A.wb = c.createBiquadFilter(); A.wb.type = 'bandpass'; A.wb.frequency.value = 1100; A.wb.Q.value = 0.6;
+  A.wg2 = c.createGain(); A.wg2.gain.value = 0.004;
+  loop('pink', 0.83).connect(A.wb); A.wb.connect(A.wg2); A.wg2.connect(SND.bus);
+  // leaves rustling in the canopies: bright noise with a fluttering, crackly envelope
+  A.rh = c.createBiquadFilter(); A.rh.type = 'bandpass'; A.rh.frequency.value = 3800; A.rh.Q.value = 0.7;
+  A.rp = c.createBiquadFilter(); A.rp.type = 'lowpass'; A.rp.frequency.value = 7000; A.rp.Q.value = 0.5;
+  A.rg = c.createGain(); A.rg.gain.value = 0;
+  loop('pink').connect(A.rh); A.rh.connect(A.rp); A.rp.connect(A.rg); A.rg.connect(SND.bus);
+  // water: a low, soft lapping bed with a slow swell
+  A.al = c.createBiquadFilter(); A.al.type = 'lowpass'; A.al.frequency.value = 340;
+  A.ag = c.createGain(); A.ag.gain.value = 0.045;
+  loop('brown').connect(A.al); A.al.connect(A.ag); A.ag.connect(SND.bus);
+  return A;
+}
+function sndUpdate(dt) {
+  if (!SND.ok || !SND.amb) return;
+  const c = SND.ctx, A = SND.amb, now = c.currentTime, wk = G.uWindK.value;
+  // wind and rustle follow the gusts; the canopies sound louder when the camera is down among the trees
+  let near = 1e9; for (const cc of canopy) near = Math.min(near, Math.hypot(cc.c[0] - camera.position.x, cc.c[1] - camera.position.y, cc.c[2] - camera.position.z));
+  const prox = clamp(3.0 / (1.5 + near), 0.3, 1.2);
+  A.wg.gain.setTargetAtTime(0.014 + 0.06 * Math.pow(wk, 1.5), now, 0.5);
+  A.wl.frequency.setTargetAtTime(300 + 600 * wk, now, 0.5);
+  A.wg2.gain.setTargetAtTime(0.0008 + 0.022 * wk * wk, now, 0.4);
+  A.ag.gain.setTargetAtTime(0.035 + 0.012 * Math.sin(now * 0.4) + 0.01 * wk, now, 0.8);
+  sndT.rustle -= dt;
+  if (sndT.rustle <= 0) { sndT.rustle = rr(0.07, 0.16); A.rg.gain.setTargetAtTime((0.0012 + 0.016 * Math.pow(wk, 1.5)) * prox * rr(0.55, 1.35), now, 0.06); }
+  // time of day: birds most in the morning, insects in the evening
+  const birdW = lightName === 'morning' ? 1.0 : lightName === 'noon' ? 0.6 : 0.25;
+  const bugW = lightName === 'evening' ? 1.0 : lightName === 'noon' ? 0.35 : 0.15;
+  for (const k of ['bulbul', 'shrike', 'whiteeye']) {
+    sndT[k] -= dt * birdW;
+    if (sndT[k] <= 0) { BIRDS[k](); sndT[k] = k === 'bulbul' ? rr(18, 45) : k === 'shrike' ? rr(45, 110) : rr(3, 9); }
+  }
+  for (const b of INSECTS) {
+    b.bout -= dt;
+    if (b.bout <= 0) { b.sing = !b.sing && rnd() < 0.35 + 0.65 * bugW; b.bout = b.sing ? rr(8, 30) * (0.5 + bugW) : rr(4, 20) / (0.3 + bugW); }
+    if (!b.sing) continue;
+    b.next -= dt;
+    if (b.next <= 0) { insectNote(b); b.next = b.kind === 'suzu' ? rr(0.85, 1.3) : rr(2.5, 5.5); }
+  }
+}
+function sndStart() {
+  if (OPTS.capture) return;
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+  try {
+    if (!SND.ctx) {
+      SND.ctx = new AC({ latencyHint: 'playback' });
+      Object.assign(SND, sndGraph(SND.ctx));
+      SND.amb = sndAmbience(SND.ctx);
+    }
+    if (SND.ctx.state !== 'running') SND.ctx.resume();
+    SND.ok = true; SND.started = true;
+    const g = SND.master.gain, now = SND.ctx.currentTime;
+    g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); g.linearRampToValueAtTime(volGain(), now + 1.5);
+  } catch (e) { console.warn('sound unavailable', e); SND.ok = false; }
+}
+function sndStop() {
+  if (!SND.ctx) return;
+  const g = SND.master.gain, now = SND.ctx.currentTime;
+  g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); g.linearRampToValueAtTime(0, now + 0.3);
+  SND.ok = false;
+  setTimeout(() => { if (!SND.on && SND.ctx) SND.ctx.suspend(); }, 400);
+}
+function sndVolume(v) {
+  SND.vol = clamp(v, 0, 1);
+  try { localStorage.setItem('pond-volume', String(SND.vol)); } catch (e) { /* ignore */ }
+  if (SND.vol > 0 && !SND.on) { sndSet(true); return; }      // turning the volume up unmutes
+  if (SND.ctx && SND.ok) { const now = SND.ctx.currentTime; SND.master.gain.cancelScheduledValues(now); SND.master.gain.setTargetAtTime(volGain(), now, 0.05); }
+}
+function sndSet(on) {
+  SND.on = on;
+  try { localStorage.setItem('pond-sound', on ? 'on' : 'off'); } catch (e) { /* ignore */ }
+  const b = $('snd-btn'); if (b) { b.setAttribute('aria-pressed', String(on)); b.title = on ? '音を消す' : '音を出す'; }
+  if (on) sndStart(); else sndStop();
+}
+// browsers only let a page make sound after the visitor has touched it
+const firstGesture = () => { if (SND.on && !SND.started) sndStart(); };
+addEventListener('pointerdown', firstGesture, { capture: true });
+addEventListener('keydown', firstGesture, { capture: true });
+document.addEventListener('visibilitychange', () => {
+  if (!SND.ctx) return;
+  if (document.hidden) SND.ctx.suspend(); else if (SND.on && SND.started) SND.ctx.resume();
+});
+// offline rendering of a test script (headless checks of levels and spectra)
+API.sound = (on) => { sndSet(!!on); return { on: SND.on, ok: SND.ok, state: SND.ctx && SND.ctx.state, voices: SND.voices }; };
+API.sndRender = async (sec = 8, which = 'main') => {
+  const c = new OfflineAudioContext(2, 44100 * sec, 44100);
+  const save = Object.assign({}, SND);
+  Object.assign(SND, sndGraph(c)); SND.ctx = c; SND.ok = true; SND.voices = 0; SND.tOver = 0; SND.master.gain.value = 0.9;
+  SND.amb = sndAmbience(c);
+  const cp = camera.position, ev = [];
+  const at = (t, fn) => { SND.tOver = t; fn(); };
+  const f0 = Object.assign({}, frogs[0], { pos: V3(cp.x + 0.6, cp.y - 0.3, cp.z - 0.6) });
+  if (which === 'swim') {
+    // a frog swimming past ~0.6 m away: kicks every 0.6 s, then a big frog, then climbing out
+    const x = cp.x, z = cp.z - 0.6;
+    [1, 1, 0.8, 0.6, 0.4].forEach((a, i) => at(0.3 + i * 0.6, () => SFX.swish(x + i * 0.05, z, a, 1)));
+    [1, 1, 0.8].forEach((a, i) => at(3.6 + i * 0.75, () => SFX.swish(x, z, a, 2)));
+    at(6.2, () => SFX.climb(x, z)); at(7.0, () => SFX.plip(x, z, 1));
+  } else if (which === 'hunt') {
+    // a strider flying in and landing, then a frog's strike, the catch, the gulp — all about 0.6 m from the camera
+    const x = cp.x, y = cp.y - 0.35, z = cp.z - 0.5;
+    at(0.2, () => SFX.striderWings(x - 0.8, y + 0.3, z, 2.0)); at(2.2, () => SFX.striderTap(x, z));
+    at(3.0, () => SFX.hop(x, y, z)); at(3.25, () => SFX.tongue(x, y, z)); at(3.31, () => SFX.tongueHit(x, y, z)); at(3.45, () => SFX.plunk(x, z, 1));
+    at(4.6, () => SFX.frogGulp(x, y, z, 1)); at(5.4, () => SFX.tongue(x, y, z)); at(5.46, () => SFX.tongueHit(x, y, z)); at(6.2, () => SFX.frogGulp(x, y, z, 2));
+    at(7.0, () => SFX.plip(x, z, 1));
+  } else {
+  at(0.3, () => SFX.croak(f0)); at(0.64, () => SFX.croak(f0)); at(0.98, () => SFX.croak(f0));
+  at(1.6, () => SFX.plip(cp.x - 0.5, cp.z - 0.8)); at(2.0, () => SFX.gulp(cp.x, cp.z - 1.0, 0.5));
+  at(2.6, () => SFX.plunk(cp.x + 0.3, cp.z - 0.9, 1)); at(3.1, () => SFX.pat(cp.x, cp.y - 0.4, cp.z - 0.7, 1));
+  at(3.5, () => SFX.swish(cp.x, cp.z - 0.7, 1)); at(3.9, () => SFX.climb(cp.x, cp.z - 0.7));
+  const cs = canopy.splice(0, canopy.length, { c: [cp.x, cp.y + 0.5, cp.z - 2], n: 1, r: 1 });   // birds just in front of the camera
+  at(4.4, () => BIRDS.bulbul()); at(6.0, () => BIRDS.shrike()); at(7.4, () => BIRDS.whiteeye());
+  canopy.splice(0, 1, ...cs);
+  const bug = { kind: 'suzu', x: cp.x - 1, y: cp.y - 0.5, z: cp.z - 1, pitch: 1 }, bug2 = Object.assign({}, bug, { kind: 'emma', x: cp.x + 1 });
+  at(5.0, () => insectNote(bug)); at(5.6, () => insectNote(bug2));
+  }
+  const buf = await c.startRendering();
+  Object.assign(SND, save);
+  // per-50ms RMS and peak, and the raw left channel for spectra
+  const L = buf.getChannelData(0), R = buf.getChannelData(1), win = 2205, rms = [], peak = [];
+  for (let i = 0; i + win <= L.length; i += win) { let s = 0, p = 0; for (let j = i; j < i + win; j++) { s += L[j] * L[j] + R[j] * R[j]; p = Math.max(p, Math.abs(L[j]), Math.abs(R[j])); } rms.push(+Math.sqrt(s / (2 * win)).toFixed(4)); peak.push(+p.toFixed(3)); }
+  // 16-bit WAV for listening / spectrograms
+  const n = L.length, wav = new DataView(new ArrayBuffer(44 + n * 4));
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) wav.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, 'RIFF'); wav.setUint32(4, 36 + n * 4, true); ws(8, 'WAVE'); ws(12, 'fmt '); wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 2, true);
+  wav.setUint32(24, 44100, true); wav.setUint32(28, 44100 * 4, true); wav.setUint16(32, 4, true); wav.setUint16(34, 16, true); ws(36, 'data'); wav.setUint32(40, n * 4, true);
+  for (let i = 0; i < n; i++) { wav.setInt16(44 + i * 4, clamp(L[i], -1, 1) * 32767, true); wav.setInt16(46 + i * 4, clamp(R[i], -1, 1) * 32767, true); }
+  let bin = ''; const u8 = new Uint8Array(wav.buffer); for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return { rms, peak, wav: btoa(bin) };
+};
+
+// ================================================================= UI
+const hintEl = $('hint');
+let hintHidden = false;
+function hideHint() { if (!hintHidden) { hintHidden = true; hintEl.classList.add('gone'); } }
+function press(group, id) { for (const b of document.querySelectorAll(`#${group} button, [aria-label="${group}"] button`)) b.setAttribute('aria-pressed', String(b.id === id)); }
+function pressIn(ids, id) { for (const x of ids) $(x).setAttribute('aria-pressed', String(x === id)); }
+function frogLabel() { $('v-frog').innerHTML = view === 'frog' ? `カエル<span class="cnt">${focusIdx + 1}/${frogs.length}</span>` : 'カエル'; }
+$('v-pond').onclick = () => { pressIn(['v-pond', 'v-frog', 'v-low'], 'v-pond'); setView('pond'); frogLabel(); };
+$('v-frog').onclick = () => {
+  if (view === 'frog') { focusIdx = (focusIdx + 1) % frogs.length; frog = frogs[focusIdx]; }
+  pressIn(['v-pond', 'v-frog', 'v-low'], 'v-frog'); setView('frog'); frogLabel();
+};
+$('v-low').onclick = () => { pressIn(['v-pond', 'v-frog', 'v-low'], 'v-low'); setView('low'); frogLabel(); };
+$('t-morning').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], 't-morning'); setLight('morning'); };
+$('t-noon').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], 't-noon'); setLight('noon'); };
+$('t-evening').onclick = () => { pressIn(['t-morning', 't-noon', 't-evening'], 't-evening'); setLight('evening'); };
+$('snd-btn').onclick = () => sndSet(!SND.on);
+{ const vol = $('vol'); vol.value = String(Math.round(SND.vol * 100)); vol.addEventListener('input', () => sndVolume(vol.value / 100)); }
+$('snd-btn').setAttribute('aria-pressed', String(SND.on)); $('snd-btn').title = SND.on ? '音を消す' : '音を出す';
+$('info-btn').onclick = () => { const p = $('info'); p.hidden = !p.hidden; $('info-btn').setAttribute('aria-expanded', String(!p.hidden)); };
+canvas.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); feed(rr(-1, 1), rr(-0.6, 0.6)); }
+});
+setTimeout(hideHint, 14000);
+
+function resize(keepDPR) {
+  if (!keepDPR) renderer.setPixelRatio(pickDPR());
+  renderer.setSize(innerWidth, innerHeight, false);
+  allocTargets();
+  setView(view, false);
+}
+addEventListener('resize', () => { clearTimeout(resize.t); resize.t = setTimeout(() => resize(false), 120); });
+
+// ================================================================= boot
+initFrogs();
+setView('pond', true);
+allocTargets();
+// settle simulation state
+for (let i = 0; i < 4; i++) update(1 / 30);
+
+async function boot() {
+  try {
+    $('load-sub').textContent = 'シェーダーをコンパイル中';
+    updateCamera(0); updateReflectCamera();
+    if (renderer.compileAsync) {
+      camera.layers.enableAll();
+      await renderer.compileAsync(scene, camera);
+    }
+    render(1 / 60);
+    if (OPTS.capture) $('loading').remove(); else $('loading').classList.add('gone');
+    API.ready = true;
+  } catch (e) {
+    console.error(e); API.error = String(e && e.message || e);
+    $('loading').innerHTML = '<div>描画の準備中にエラーが起きました<small>ページを再読み込みしてください</small></div>';
+    return;
+  }
+  if (!OPTS.capture) {
+    let last = performance.now(); let slow = 0, frames = 0;
+    const loop = (now) => {
+      const dt = Math.min((now - last) / 1000, 1 / 20); last = now;
+      update(dt); render(dt);
+      frames++;
+      if (frames > 60 && frames < 400) { if (dt > 1 / 28) slow++; if (slow > 90 && renderer.getPixelRatio() > 0.8) { renderer.setPixelRatio(Math.max(0.75, renderer.getPixelRatio() * 0.75)); resize(true); slow = 0; } }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+}
+API.step = (n = 1) => { const dt = 1 / OPTS.fps; for (let i = 0; i < n; i++) { update(dt); render(dt); } return G.uTime.value; };
+API.profile = () => { PROF = []; PROF.t = performance.now(); mark('start'); update(1 / 30); render(1 / 30); const r = PROF; PROF = null; return r.map(x => x[0] + ':' + Math.round(x[1])).join(' '); };
+API.dbg_str = () => ({ striders, strStats, frogs });
+API.dbg_veg2 = () => ({ lotus, lotusFloat, lotusStand, willowTips, LOTUS0, WILLOW });
+API.dbg_veg = () => ({ fallen, weeds, gust, plumes: NPLUME, NWEED, duck, duckRafts, hishi, fluff, typhaS, TYPHA, NDUCK, SAZANKA, HIGAN, TSUWA, FERNS, NCARD, ribVerts: RIB.p.length / 3 });
+API.dbg = { pondGrad, terrainH, polarAt, pondR, SUSUKI, LANT, TREE_DEF, frogs, pads, get drops() { return dropCount; }, RES, koi, food, pondSDF, koiSegDist, SEG, feed, koiEnds, KOI_R, KOI_H };
+API.simMax = () => { const buf = new Uint16Array(SW * SH * 4); renderer.readRenderTargetPixels(simA, 0, 0, SW, SH, buf); let m = 0, mi = 0; for (let i = 0; i < SW * SH; i++) { const v = Math.abs(THREE.DataUtils.fromHalfFloat(buf[i * 4])); if (v > m) { m = v; mi = i; } } return { max: m, x: DOMAIN.x + (mi % SW + 0.5) / SW * DOMAIN.w, z: DOMAIN.z + (Math.floor(mi / SW) + 0.5) / SH * DOMAIN.h, SW, SH, minR: MIN_DROP_R }; };
+API.tick = (n = 1) => { const dt = 1 / OPTS.fps; for (let i = 0; i < n; i++) update(dt); dropQueue.length = Math.min(dropQueue.length, 16); return G.uTime.value; };
+API.grab = () => renderer.domElement.toDataURL('image/jpeg', 0.92);
+API.uniformReport = () => {
+  // rough count of uniform vector slots per program (for the WebGL2 minimum of 224 fragment / 256 vertex vectors)
+  const gl = renderer.getContext(), out = [];
+  const slots = { [gl.FLOAT]: 1, [gl.FLOAT_VEC2]: 1, [gl.FLOAT_VEC3]: 1, [gl.FLOAT_VEC4]: 1, [gl.INT]: 1, [gl.BOOL]: 1, [gl.FLOAT_MAT3]: 3, [gl.FLOAT_MAT4]: 4, [gl.SAMPLER_2D]: 1, [gl.SAMPLER_2D_SHADOW]: 1 };
+  for (const pr of renderer.info.programs) {
+    const prog = pr.program, n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS); let v = 0;
+    for (let i = 0; i < n; i++) { const u = gl.getActiveUniform(prog, i); v += (slots[u.type] || 1) * u.size; }
+    out.push([pr.name, n, v]);
+  }
+  out.sort((a, b) => b[2] - a[2]);
+  return { max: [gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS), gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS)], top: out.slice(0, 8) };
+};
+API.project = (x, y, z) => { const v = V3(x, y, z).project(camera); return [Math.round((v.x + 1) / 2 * innerWidth), Math.round((1 - v.y) / 2 * innerHeight)]; };
+API.cmd = (name, ...a) => {
+  if (name === 'view') { setView(a[0], !!a[1]); return view; }
+  if (name === 'light') { setLight(a[0], !!a[1]); return a[0]; }
+  if (name === 'feed') { feed(a[0], a[1]); return food.length; }
+  if (name === 'jump') { frog.next = frog.t; return frog.state; }
+  if (name === 'cam') { Object.assign(camGoal, a[0]); if (a[1]) Object.assign(cam, camGoal); return cam; }
+  if (name === 'frogcam') { view = 'frog'; const az = Math.atan2(Math.cos(frog.yaw + a[0]), Math.sin(frog.yaw + a[0])); Object.assign(camGoal, { az, el: a[1], dist: a[2], fov: a[3] || 38, tx: frog.pos.x, ty: frogTY(frog), tz: frog.pos.z }); Object.assign(cam, camGoal); updateCamera(0); dof.ap = dof.apGoal; return true; }
+  if (name === 'frog') return { pos: frog.pos.toArray(), yaw: frog.yaw, state: frog.state, pad: frog.pad, focus: focusIdx };
+  if (name === 'frogs') return frogs.map((f) => ({ pos: f.pos.toArray().map((v) => +v.toFixed(3)), state: f.state, pad: f.pad, sac: +f.sac.toFixed(2) }));
+  if (name === 'focus') { focusIdx = a[0]; frog = frogs[focusIdx]; return focusIdx; }
+  if (name === 'call') { const f = frogs[a[0] ?? focusIdx]; f.callT = 0; return f.male; }
+  if (name === 'koi') return koi.map(k => [k.pos.x.toFixed(2), k.pos.y.toFixed(2), k.pos.z.toFixed(2)]);
+  if (name === 'pads') return pads.map(p => [p.x.toFixed(2), p.z.toFixed(2), p.r.toFixed(3)]);
+  if (name === 'debug') { const tex = { caus: causRT, surf: surfRT, mask: padMaskRT, refr: refrRT, refl: reflRT, sim: simA, shadow: shadowRT }[a[0]]; finalMat.uniforms.uDbgOn.value = tex ? 1 : 0; finalMat.uniforms.uDbg.value = tex ? tex.texture : null; finalMat.uniforms.uDbgScale.value = a[1] || 1; return !!tex; }
+  if (name === 'shadowdbg') {
+    const m = fsMat(`float sat(float x){ return clamp(x, 0.0, 1.0); } uniform sampler2DShadow uShadowMap; varying vec2 vUv; void main(){ float lo = 0.0, hi = 1.0; for (int i = 0; i < 12; i++){ float mid = 0.5 * (lo + hi); float r = texture(uShadowMap, vec3(vUv, mid)); if (r > 0.5) lo = mid; else hi = mid; } float d = 0.5 * (lo + hi); gl_FragColor = vec4(vec3(d > 0.999 ? 1.0 : sat((d - 0.35) * 3.0)), 1.0); }`, { uShadowMap: G.uShadowMap });
+    renderShadow(true); renderer.setViewport(0, 0, innerWidth, innerHeight); runPass(m, null); return true;
+  }
+  if (name === 'shadowraw') {
+    renderShadow(true);
+    const dt = shadowRT.depthTexture; const cf = dt.compareFunction; dt.compareFunction = null; dt.minFilter = dt.magFilter = THREE.NearestFilter; dt.needsUpdate = true;
+    const m = fsMat(`uniform sampler2D uD; varying vec2 vUv; void main(){ float d = texture(uD, vUv).r; gl_FragColor = vec4(vec3(d > 0.999 ? 1.0 : clamp((d - 0.35) * 3.0, 0.0, 1.0)), 1.0); }`, { uD: { value: dt } });
+    renderer.setViewport(0, 0, innerWidth, innerHeight); runPass(m, null);
+    dt.compareFunction = cf; dt.minFilter = dt.magFilter = THREE.LinearFilter; dt.needsUpdate = true; return true;
+  }
+  if (name === 'shadowcam') {
+    renderShadow(true); G.uPass.value = 0; G.uShadowOn.value = 0; shadowCam.layers.set(a[0] || 0);
+    renderer.setRenderTarget(null); renderer.setViewport(0, 0, innerWidth, innerHeight); renderer.setClearColor(0xff00ff, 1); renderer.clear();
+    renderer.render(scene, shadowCam); shadowCam.layers.set(LAYER.SHADOW); return [shadowCam.position.toArray(), G.uSunDir.value.toArray()];
+  }
+  if (name === 'koicam') { const k = koi[a[0]]; view = 'custom'; const fx = Math.cos(k.yaw), fz = Math.sin(k.yaw);
+    Object.assign(camGoal, { tx: k.pos.x + fx * k.L * 0.1, ty: k.pos.y, tz: k.pos.z + fz * k.L * 0.1, az: Math.atan2(Math.cos(k.yaw + a[1]), Math.sin(k.yaw + a[1])), el: a[2], dist: a[3], fov: 40 }); Object.assign(cam, camGoal); return [k.v, k.L]; }
+  if (name === 'flowercam') { const f = flowers[a[0]]; view = 'custom'; Object.assign(camGoal, { tx: f.x, ty: 0.03, tz: f.z, az: a[1], el: a[2], dist: a[3], fov: 40 }); Object.assign(cam, camGoal); return f.kind; }
+  if (name === 'frogshot') {
+    // plan a jump, then frame it from across the jump direction (a[0] = extra yaw offset, a[1] el, a[2] dist)
+    const cur = pads[frog.pad]; let best = -1, bs = -1e9;
+    for (let i = 0; i < NPAD; i++) { if (i === frog.pad) continue; const p = pads[i]; const d = Math.hypot(p.x - cur.x, p.z - cur.z);
+      if (d < 0.3 || d > 0.6 || p.r < 0.09) continue; const sc = -Math.abs(d - 0.42) * 3 + p.r * 4; if (sc > bs) { bs = sc; best = i; } }
+    if (best < 0) return -1;
+    frog.plan = best;
+    const tp = pads[best]; const ux = tp.x - cur.x, uz = tp.z - cur.z; const ul = Math.hypot(ux, uz);
+    const c1 = Math.atan2(-uz / ul, ux / ul), c2 = c1 + Math.PI;
+    const fx = Math.cos(frog.yaw), fz = Math.sin(frog.yaw);
+    const sc1 = Math.sin(c1) * fx + Math.cos(c1) * fz, sc2 = Math.sin(c2) * fx + Math.cos(c2) * fz;
+    let az = sc1 > sc2 ? c1 : c2;
+    const sgn = (Math.sin(az + 0.01) * fx + Math.cos(az + 0.01) * fz) > (Math.sin(az) * fx + Math.cos(az) * fz) ? 1 : -1;
+    az += sgn * (a[0] || 0.35);
+    view = 'frog';
+    Object.assign(camGoal, { az, el: a[1] || 0.3, dist: a[2] || 0.46, fov: 38, tx: frog.pos.x, ty: frogTY(frog), tz: frog.pos.z });
+    Object.assign(cam, camGoal); updateCamera(0); dof.ap = dof.apGoal;
+    return [best, ul, az, sgn];
+  }
+  if (name === 'jumpside') {
+    if (frog.plan !== undefined && frog.plan >= 0) { frog.state = 'crouch'; frog.t = 0; frog.jumpTo = frog.plan; frog.plan = -1; return frog.jumpTo; }
+    const cur = pads[frog.pad]; const fwd = waterMat.uniforms.uCamFwd.value; let best = -1, bs = -1e9;
+    for (let i = 0; i < NPAD; i++) { if (i === frog.pad) continue; const p = pads[i]; const dx = p.x - cur.x, dz = p.z - cur.z; const d = Math.hypot(dx, dz);
+      if (d < 0.3 || d > 0.62 || p.r < 0.095) continue; const side = Math.abs(dx * fwd.z - dz * fwd.x) / d; const away = (dx * fwd.x + dz * fwd.z) / d;
+      if (away < -0.1) continue; const sc = side * 0.9 + away * 0.6 - Math.abs(d - 0.4) * 2; if (sc > bs) { bs = sc; best = i; } }
+    if (best >= 0) { frog.state = 'crouch'; frog.t = 0; frog.jumpTo = best; }
+    return best;
+  }
+  if (name === 'padcam') { const pd = pads[a[0]]; view = 'custom'; Object.assign(camGoal, { tx: pd.x, ty: 0.0, tz: pd.z, az: a[1], el: a[2], dist: a[3], fov: 40 }); Object.assign(cam, camGoal); return [pd.r, pd.age]; }
+  if (name === 'gust') { gust.next = 0; gust.dur = 0; return true; }
+  if (name === 'strider') { const S = strNew(a[0], a[1], a[2] ?? rr(0, TAU)); striders.push(S); strStats.spawned++; return striders.length; }
+  if (name === 'stridein') { const S = strSpawn(false); return S ? [S.fly.ex, S.fly.ez] : null; }
+  if (name === 'edgeprey') {
+    // frog a[0] sitting at the rim of its leaf facing open water, a strider resting a[1] m beyond the rim
+    const f = frogs[a[0]], p = pads[f.pad];
+    let best = null;
+    for (let k = 0; k < 36 && best === null; k++) { const ang = k / 36 * TAU, x = p.x + Math.cos(ang) * (p.r + 0.08), z = p.z + Math.sin(ang) * (p.r + 0.08); if (pondSDF(x, z) < -0.12 && !floaters.some((q) => q !== p && Math.hypot(q.x - x, q.z - z) < q.r + 0.05)) best = ang; }
+    if (best === null) return null;
+    const c = Math.cos(p.rot), sn = Math.sin(p.rot), ux = Math.cos(best), uz = Math.sin(best);
+    f.lx = (c * ux + sn * uz) * 0.72; f.lz = (-sn * ux + c * uz) * 0.72; f.yaw = best; f.state = 'sit'; f.t = 2;
+    const d = a[1] ?? 0.035, rx = p.x + ux * (p.r + d), rz = p.z + uz * (p.r + d);
+    const S = strNew(rx, rz, best + (a[2] ?? 1.3)); S.modeT = 30; striders.push(S); strStats.spawned++;
+    return [rx, rz, best];
+  }
+  if (name === 'preyfront') {
+    // a strider resting on the water right in front of frog a[0], a[1] metres from its mouth
+    const f = frogs[a[0]], d = a[1], x = f.mouthW.x + Math.cos(f.yaw) * d, z = f.mouthW.z + Math.sin(f.yaw) * d;
+    const S = strNew(x, z, f.yaw + (a[2] || 0)); S.modeT = 30; striders.push(S); strStats.spawned++; return [x, z];
+  }
+  if (name === 'graze') { const k = koi[a[0] || 0]; k.duckCool = 0; k.duck = null; return k.i; }
+  if (name === 'leaves') { for (let i = 0; i < (a[0] || 8); i++) spawnFallLeaf(); return fallen.length; }
+  if (name === 'samaras') { for (let i = 0; i < (a[0] || 8); i++) spawnSamara(); return fallen.length; }
+  if (name === 'frogsit') { if (frog.state === 'crouch') { frog.state = 'sit'; frog.t = 0; } frog.next = a[0] === undefined ? 1e9 : a[0]; return frog.state; }
+  if (name === 'rate') { camRate.orbit = a[0]; camRate.target = a[1] || 0; return true; }
+  if (name === 'goal') { Object.assign(camGoal, a[0]); return camGoal; }
+  if (name === 'state') return { cam, camGoal, view };
+  if (name === 'set') { if (G[a[0]]) { const v = G[a[0]].value; if (typeof v === 'number') G[a[0]].value = a[1]; else if (v.set) v.set(...a[1]); } return true; }
+  if (name === 'ui') { document.body.classList.toggle('capture', !a[0]); return true; }
+  return null;
+};
+boot();

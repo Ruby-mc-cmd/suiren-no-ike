@@ -1,0 +1,118 @@
+<title>睡蓮の池</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@500;600&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
+<style>
+/* Layout: the live pond is the whole page; a small title floats top-left and one glass control strip sits at the bottom edge. */
+:root{
+  --ink:#f3efe6;            /* washi white */
+  --ink-2:rgba(243,239,230,.74);
+  --ink-3:rgba(243,239,230,.50);
+  --glass:rgba(8,19,16,.48); /* pond-shadow glass */
+  --glass-2:rgba(8,19,16,.86);
+  --line:rgba(243,239,230,.16);
+  --lotus:#eea8bc;          /* water-lily pink, the single accent */
+  --deep:#08130f;
+  --f-display:"Shippori Mincho B1","Hiragino Mincho ProN","Yu Mincho","Noto Serif JP","Noto Serif CJK JP",serif;
+  --f-ui:"Zen Kaku Gothic New","Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Noto Sans CJK JP",system-ui,sans-serif;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{margin:0;background:var(--deep);color:var(--ink);font-family:var(--f-ui);overflow:hidden;-webkit-tap-highlight-color:transparent;-webkit-font-smoothing:antialiased}
+#scene{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab;outline:none}
+#scene.dragging{cursor:grabbing}
+.title{position:fixed;left:16px;top:calc(env(safe-area-inset-top,0px) + 14px);pointer-events:none;text-shadow:0 1px 14px rgba(0,0,0,.45);max-width:calc(100% - 32px)}
+.title h1{margin:0;font-family:var(--f-display);font-weight:600;font-size:clamp(22px,2.6vw,30px);letter-spacing:.14em;line-height:1.15;text-wrap:balance}
+.title p{margin:6px 0 0;font-size:12px;letter-spacing:.1em;color:var(--ink-2)}
+.bar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 14px);display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:6px 10px;width:max-content;max-width:calc(100% - 32px);box-sizing:border-box;padding:6px 8px;border-radius:16px;background:var(--glass);border:1px solid var(--line);-webkit-backdrop-filter:blur(14px) saturate(1.15);backdrop-filter:blur(14px) saturate(1.15)}
+.grp{display:flex;align-items:center;gap:6px}
+.lbl{font-size:11px;letter-spacing:.16em;color:var(--ink-3);padding-left:4px}
+.seg{display:flex;gap:2px;padding:2px;border-radius:11px;background:rgba(243,239,230,.06)}
+.bar button{appearance:none;border:0;background:transparent;color:var(--ink-2);font:500 13px/1 var(--f-ui);letter-spacing:.08em;padding:0 12px;min-width:44px;height:34px;border-radius:9px;cursor:pointer;transition:background .2s,color .2s}
+.bar button:hover{color:var(--ink)}
+.seg button[aria-pressed="true"]{background:rgba(243,239,230,.15);color:var(--ink);box-shadow:inset 0 -2px 0 var(--lotus)}
+#info-btn[aria-expanded="true"]{color:var(--ink);background:rgba(243,239,230,.12)}
+#snd-btn{display:flex;align-items:center;gap:5px}
+#snd-btn .ico{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+#snd-btn .spk{fill:currentColor;stroke:none}
+#snd-btn[aria-pressed="true"]{color:var(--ink)}
+#snd-btn[aria-pressed="true"] .off,#snd-btn[aria-pressed="false"] .on{display:none}
+#snd-btn[aria-pressed="false"]{color:var(--ink-3)}
+.snd{gap:2px}
+#vol{-webkit-appearance:none;appearance:none;width:92px;height:34px;margin:0 6px 0 0;background:transparent;cursor:pointer;touch-action:none}
+#vol::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:rgba(243,239,230,.24)}
+#vol::-moz-range-track{height:3px;border-radius:2px;background:rgba(243,239,230,.24)}
+#vol::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;margin-top:-6px;border-radius:50%;background:var(--ink);box-shadow:0 0 0 3px rgba(238,168,188,.35)}
+#vol::-moz-range-thumb{width:15px;height:15px;border:0;border-radius:50%;background:var(--ink);box-shadow:0 0 0 3px rgba(238,168,188,.35)}
+#vol:focus-visible{outline:2px solid var(--lotus);outline-offset:2px;border-radius:6px}
+.bar .cnt{font-size:10px;letter-spacing:0;margin-left:3px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+button:focus-visible{outline:2px solid var(--lotus);outline-offset:2px}
+.hint{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 74px);font-size:12px;letter-spacing:.08em;color:var(--ink);background:var(--glass);border:1px solid var(--line);padding:8px 14px;border-radius:999px;white-space:nowrap;pointer-events:none;transition:opacity .8s;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
+.hint.gone{opacity:0}
+.panel{position:fixed;right:16px;top:calc(env(safe-area-inset-top,0px) + 14px);width:min(360px,calc(100% - 32px));max-height:calc(100% - 140px);overflow:auto;box-sizing:border-box;padding:18px 18px 14px;border-radius:16px;background:var(--glass-2);border:1px solid var(--line);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)}
+.panel h2{margin:0 0 4px;font-family:var(--f-display);font-weight:600;font-size:17px;letter-spacing:.12em}
+.panel .sub{margin:0 0 12px;font-size:12px;color:var(--ink-3);letter-spacing:.06em}
+.panel dl{margin:0;display:grid;grid-template-columns:5.2em 1fr;gap:9px 12px;font-size:12.5px;line-height:1.6}
+.panel dt{color:var(--lotus);letter-spacing:.1em}
+.panel dd{margin:0;color:var(--ink-2);min-width:0}
+.panel code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:11.5px;color:var(--ink);font-variant-numeric:tabular-nums}
+.panel .ops{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-3);line-height:1.7}
+.loading{position:fixed;inset:0;display:grid;place-items:center;background:var(--deep);color:var(--ink-2);font-family:var(--f-display);letter-spacing:.2em;font-size:15px;transition:opacity .9s}
+.loading.gone{opacity:0;pointer-events:none}
+.loading small{display:block;margin-top:10px;font-family:var(--f-ui);font-size:11px;letter-spacing:.12em;color:var(--ink-3);text-align:center}
+.capture .title,.capture .bar,.capture .hint,.capture .panel{display:none}
+@media (max-width:560px){
+  .lbl{display:none}
+  .bar{gap:6px;padding:5px}
+  .bar button{padding:0 8px;min-width:36px}
+  #vol{width:80px}
+  .hint{bottom:calc(env(safe-area-inset-bottom,0px) + 112px)}
+}
+@media (prefers-reduced-motion:reduce){.hint,.loading,.bar button{transition:none}}
+</style>
+
+<canvas id="scene" tabindex="0" aria-label="鯉が泳ぎ、アマガエルが葉にとまる秋の睡蓮の池の3Dシーン。タップで餌、ドラッグで視点を回転"></canvas>
+<header class="title"><h1>睡蓮の池</h1><p>鯉十二尾・睡蓮・アマガエル五匹</p></header>
+<div class="hint" id="hint">水面をタップすると餌が一粒ずつ落ちます</div>
+<nav class="bar" aria-label="表示の切り替え">
+  <div class="grp"><span class="lbl">視点</span>
+    <div class="seg" role="group" aria-label="視点">
+      <button id="v-pond" type="button" aria-pressed="true">池</button><button id="v-frog" type="button" aria-pressed="false" title="押すたびに次のカエルへ">カエル</button><button id="v-low" type="button" aria-pressed="false">水面</button>
+    </div>
+  </div>
+  <div class="grp"><span class="lbl">光</span>
+    <div class="seg" role="group" aria-label="時間帯">
+      <button id="t-morning" type="button" aria-pressed="false">朝</button><button id="t-noon" type="button" aria-pressed="true">昼</button><button id="t-evening" type="button" aria-pressed="false">夕</button>
+    </div>
+  </div>
+  <div class="grp snd"><button id="snd-btn" type="button" aria-pressed="true" aria-label="音"><svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path class="spk" d="M3 7.5h3l4-3.5v12l-4-3.5H3z"/><path class="on" d="M13 7.2a4 4 0 0 1 0 5.6M15.2 5a7 7 0 0 1 0 10"/><path class="off" d="M13 7.5l5 5M18 7.5l-5 5"/></svg>音</button><input id="vol" type="range" min="0" max="100" step="1" value="70" aria-label="音量"></div>
+  <button id="info-btn" type="button" aria-expanded="false" aria-controls="info">仕組み</button>
+</nav>
+<aside class="panel" id="info" hidden aria-label="描画の仕組み">
+  <h2>描画の仕組み</h2>
+  <p class="sub">Three.js とシェーダーで毎フレーム計算しています</p>
+  <dl>
+    <dt>水面</dt><dd>Gerstner波 4本 + FBMのさざ波 + GPUの波動方程式 <code id="i-sim">384×276</code> 格子</dd>
+    <dt>反射</dt><dd>平面反射を Schlick 近似のフレネルで合成 <code>F₀ = 0.02</code></dd>
+    <dt>屈折</dt><dd>屈折率 <code>n = 1.333</code>。水底は見かけの深さに補正して描画</dd>
+    <dt>水の色</dt><dd>Beer–Lambert 減衰。吸収係数 <code>σₐ = (1.25, 0.52, 0.82) m⁻¹</code> と散乱光</dd>
+    <dt>集光模様</dt><dd>屈折した太陽光を水底まで追跡し、面積の縮み具合を明るさに換算 <code id="i-caus">512×368</code> 本</dd>
+    <dt>鯉</dt><dd>頂点シェーダーで体をうねらせ、boids で群泳。紅白・大正三色・昭和三色・山吹黄金。落ちたばかりの葉には寄ってきて口でつつく</dd>
+    <dt>アメンボ</dt><dd>ときどき岸の向こうから飛んできて水面に降り、しばらくするとまた飛び去る。長い中脚で水をかいて滑り、後脚でかじを取る。脚先が水面をくぼませ、そのくぼみがレンズになって、池の底に縁の明るい丸い影を落とす。カエルや鯉が動くと散るように逃げる</dd>
+    <dt>カエルの狩り</dt><dd>近くを滑るアメンボに向き直り、届けば口を開けて舌で捕る。少し遠ければ滑っていく先を読んで飛びかかり、水に入って泳いで葉へ戻る。遠ければ近くの葉へ移り、泳いでいる途中で見つければ追いかける。逃げられることもある。捕まえると目玉を沈めて飲み込み、手で口に押し込む</dd>
+    <dt>睡蓮</dt><dd>朝は半開き、昼は全開、夕方には花びらを一枚ずつ立てて閉じる</dd>
+    <dt>散り紅葉</dt><dd>色づいた木ほど葉を落とす。竹とんぼのような翼果は自転しながらまっすぐ落ちる。振り子のように揺れて舞い落ち、水面では波に揺られて流れ、岸や睡蓮の縁に寄り、水を吸うと沈んで底に積もる</dd>
+    <dt>水草</dt><dd>池底のセキショウモ。帯状の葉が流れに揺れ、一枚ごとのばねで鯉に押し分けられては戻る</dd>
+    <dt>浮草</dt><dd>風下の岸に寄ったウキクサ。鯉や泳ぐカエルが通ると道が開いてゆっくり閉じ、鯉がときどき浮いてきて食べる（食べた所はやがて元に戻る）。水面のさざ波を抑え、底に影を落とす</dd>
+    <dt>ヒシ</dt><dd>菱形でふちがぎざぎざの葉が、ふくらんだ葉柄で浮くロゼット。葉が重ならないよう黄金角で並び、外側の古い葉から赤く色づく</dd>
+    <dt>ハス</dt><dd>水面から少し立ち上がる低い葉と、水面に浮く丸い浮き葉。立ち葉はろう質の表面で水滴をはじき、水滴は傾きに沿って転がって中央に集まる。葉が揺れて傾くと水がこぼれ、縁から池へ落ちる。立ち葉にはカエルが跳び乗る</dd>
+    <dt>枝垂れ柳</dt><dd>灯籠の横の岸から池にかぶさる。垂れた枝は風になびき、水面まで届く枝先が水を引きずって小さな波紋を描く</dd>
+    <dt>岸の草花</dt><dd>彼岸花（反り返った赤い花被と長いしべ）、灯籠の根元のツワブキ（つやのある葉と黄色い花）、岩陰のシダ、湿った石のまわりのコケ。山茶花は花びらを一枚ずつ散らし、木の下や水面に積もる</dd>
+    <dt>音</dt><dd>音声ファイルは使わず Web Audio で合成。風と葉ずれ（突風でふくらむ）、水音、スズムシとエンマコオロギ（夕方に多い）、ヒヨドリ・モズの高鳴き・メジロ（朝に多い）、鳴嚢に合わせたカエルの声、餌の着水・鯉が食べる音・カエルの跳躍や着水、泳ぐときのちゃぷちゃぷという水音。カメラからの距離と左右で聞こえ方が変わる</dd>
+    <dt>ガマ</dt><dd>池の両端の浅瀬。茶色い穂の一部が熟して綿毛がはじけ、風、とくに突風が吹くと種が池の上を漂って水面に落ちる</dd>
+    <dt>ススキ</dt><dd>対岸の株。穂は絹毛の房の集まりで、逆光（とくに夕方）で透けて光る。突風が来ると草も木もなびき、紅葉が一斉に散り、水面にさざ波が走る</dd>
+    <dt>カエル</dt><dd>ニホンアマガエル五匹（普通の緑色が二匹、黄色の色素を持たない水色が三匹。うち二匹は1.5倍と2倍の大きなメス）を SDF レイマーチングで描画。指先の吸盤、目を通る黒い筋、鳴嚢を膨らませて鳴く様子、呼吸・まばたき・葉から葉への跳躍。ときどき水へ飛び込み、蹴り→滑走→脚の引き戻しの平泳ぎで別の葉まで泳いで這い上がる</dd>
+  </dl>
+  <p class="ops">ドラッグで回転、ピンチかホイールで拡大。水面をタップすると餌を一粒、カエルをタップすると跳びます。「カエル」は押すたびに次の一匹へ移ります。</p>
+</aside>
+<div class="loading" id="loading"><div>池に水を張っています<small id="load-sub">シェーダーを準備中</small></div></div>
