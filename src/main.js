@@ -4279,10 +4279,10 @@ function makeFrog(o) {
     // feeding
     prey: null, huntT: 0, huntCool: 0, approachCool: 0, fullT: o.fullT ?? lr(2, 10), tongue: null, swallow: 0, gulped: false, mouth: 0, wipe: 0, wipePh: 0, wipeSide: 1,
     hunt: null, chase: null, chaseT: 0, chaseCool: 0, edgeCool: 0, mouthW: V3(), bodyO: [0, 0.0192, 0], pitchB: 0.34,
-    // life: id, generation, hour of birth (hatching), development (hours of growth), reserves, health, adult size, and its
-    // own chance of dying on each day once grown (dieP; 0 = never)
+    // life: id, generation, hour of birth (hatching), development (hours of growth), reserves, health, the size it can grow to
+    // and its pace of growing (grow; gday is the day's share), and its own chance of dying on each day once grown (dieP; 0 = never)
     id: o.id ?? lifeId++, gen: o.gen ?? 1, born: o.born ?? 0, dev: o.dev ?? 1200, energy: o.energy ?? 0.8, health: o.health ?? 1,
-    maxSize: o.maxSize ?? o.size, dieP: o.dieP ?? 0, dayN: -1, cool: o.cool ?? lr(60, 240), tail: o.tail ?? 0, dying: 0, cause: null, spawn: null,
+    maxSize: o.maxSize ?? o.size, grow: o.grow ?? 1, gday: 1, dieP: o.dieP ?? 0, dayN: -1, cool: o.cool ?? lr(60, 240), tail: o.tail ?? 0, dying: 0, cause: null, spawn: null,
   };
   frogs.push(f);
   return f;
@@ -6799,7 +6799,7 @@ function tadToFrog(T, pi) {
   const p = pads[pi];
   const male = lifeRand() < 0.5;
   const f = makeFrog({ male, green: T.green, size: 0.30, seed: T.seed * 3, id: T.id, gen: T.gen, born: T.born, dev: T.dev, energy: Math.max(T.energy, 0.5), tail: 1,
-    maxSize: male ? lr(1.0, 1.35) : lr(1.3, 2.0), dieP: frogDieP(), next: lr(30, 60), swimIn: lr(200, 400), fullT: 200, callT: 1e9 });
+    maxSize: frogMaxSize(male), grow: frogGrow(), dieP: frogDieP(), next: lr(30, 60), swimIn: lr(200, 400), fullT: 200, callT: 1e9 });
   if (!f) return null;
   const a = Math.atan2(T.z - p.z, T.x - p.x), c = Math.cos(p.rot), sn = Math.sin(p.rot), ux = Math.cos(a), uz = Math.sin(a);
   f.pad = pi; f.lx = (c * ux + sn * uz) * 0.72; f.lz = (-sn * ux + c * uz) * 0.72; f.yaw = a + Math.PI; f.state = 'land'; f.t = 0;
@@ -6817,6 +6817,12 @@ const FROG_STARVE = 0.0035;
 // between 0.3 % and 3.5 % a day, evenly on a log scale. With luck a frog can live on and on.
 const DIE_P = [0.003, 0.035];
 const frogDieP = () => DIE_P[0] * Math.pow(DIE_P[1] / DIE_P[0], lifeRand());
+// size: the body is FROG_CM x size centimetres long, and no frog grows past FROG_LEN_MAX (12 cm). Each has its own ceiling, drawn
+// when it leaves the water (most stay well under 12 cm; the females tend to be bigger), and its own pace (half to twice the usual),
+// and how much it puts on varies from day to day
+const FROG_CM = FROG_SCALE * 7.2, FROG_LEN_MAX = 12, FROG_SIZE_MAX = FROG_LEN_MAX / FROG_CM;
+const frogMaxSize = (male) => { const a = male ? 1.0 : 1.12; return a + (FROG_SIZE_MAX - a) * Math.pow(lifeRand(), male ? 1.8 : 1.3); };
+const frogGrow = () => 0.5 * Math.pow(4, lifeRand());
 function frogLife(f, dt) {
   if (lifeOff) return;
   const S = f.size;
@@ -6827,17 +6833,18 @@ function frogLife(f, dt) {
     f.size = Math.max(f.size, lerp(0.30, Math.min(f.maxSize, f.male ? 1.0 : 1.12), k));
     if (f.dev < LIFE.TAILGONE) { f.fullT = Math.max(f.fullT, 5); f.next = Math.max(f.next, f.t + 5); f.swimIn = Math.max(f.swimIn, 20); }
     if (f.dev >= LIFE.ADULT - 1 && f.callT > 1e8 && f.male) f.callT = lr(5, 30);
-  } else if (f.energy > 0.5 && f.size < f.maxSize) f.size = Math.min(f.maxSize, f.size + dt * 0.0006 * (f.maxSize - f.size + 0.05));
+  } else if (f.energy > 0.5 && f.size < f.maxSize) f.size = Math.min(f.maxSize, f.size + dt * 0.0006 * f.grow * f.gday * (f.maxSize - f.size + 0.05));
   f.tail = 1 - smooth01(LIFE.CLIMB, LIFE.TAILGONE, f.dev);
   f.mat.uniforms.uJuv.value = 1 - smooth01(LIFE.CLIMB, LIFE.ADULT, f.dev);
   if (f.dev >= LIFE.TAILGONE) f.energy = Math.max(0, f.energy - dt * 0.0012 * (0.6 + 0.4 * S));
   if (f.energy <= 0.001) f.health -= dt * FROG_STARVE; else if (f.energy > 0.4) f.health = Math.min(1, f.health + dt * 0.002);
   f.cool -= dt;
-  // the end: each new day a grown frog draws its lot (its own chance of dying that day), and hunger can kill at any time
+  // each new day: how much it will grow that day, and for a grown frog its lot (its own chance of dying that day);
+  // hunger can kill at any time
   let fate = false;
   const day = Math.floor((worldH - f.born) / 24);
   if (f.dayN < 0) f.dayN = day;
-  while (f.dayN < day) { f.dayN++; if (f.dev >= LIFE.ADULT && f.dieP > 0 && lifeRand() < f.dieP) fate = true; }
+  while (f.dayN < day) { f.dayN++; f.gday = lr(0.2, 1.8); if (f.dev >= LIFE.ADULT && f.dieP > 0 && lifeRand() < f.dieP) fate = true; }
   if (!f.dying && (fate || f.health <= 0)) { f.dying = 0.001; f.cause = f.health <= 0 ? 'starved' : 'old'; lifeStats.frogDied++; lifeStats[f.cause === 'old' ? 'frogOld' : 'frogStarved']++; if (focus && focus.ref === f) focusNote(f.cause === 'old' ? '寿命をむかえた' : '餌が足りず力尽きた'); }
   // breeding: a well-fed grown female, with a grown male about, goes down to the shallows to lay
   if (!f.dying && !f.male && f.dev >= LIFE.ADULT && f.size > 0.95 && f.energy > 0.55 && f.cool <= 0 && f.state === 'sit' && !f.prey && !f.tongue && f.swallow <= 0
@@ -6875,7 +6882,8 @@ function startSpawn(f) {
     if (mb >= 0) {
       const ma = Math.atan2(site[1] - mp.z, site[0] - mp.x), mR = mp.r + 0.08;
       m.swimPlan = { to: mb, appA: padApproach(mb, site[0], site[1]) ?? 0, ex: mp.x + Math.cos(ma) * mR, ez: mp.z + Math.sin(ma) * mR };
-      m.state = 'crouch'; m.t = 0; m.jumpTo = mb; m.diving = true; m.spawn = { x: site[0] + 0.05, z: site[1] + 0.03, t: 0, male: true, mate: f }; m.cool = 300; f.spawn.mate = m;
+      const off = 0.026 * (f.size + m.size);           // he keeps beside her, further off when they are big
+      m.state = 'crouch'; m.t = 0; m.jumpTo = mb; m.diving = true; m.spawn = { x: site[0] + off * 0.86, z: site[1] + off * 0.51, t: 0, male: true, mate: f }; m.cool = 300; f.spawn.mate = m;
     }
   }
 }
@@ -6887,7 +6895,7 @@ function spawnSteer(f, dt) {
     s.t += dt;
     // she waits there for the male (a while, at least); he stays by her until the eggs are out
     const mate = s.mate && s.mate.spawn && !s.mate.dying ? s.mate : null;
-    if (s.male ? (s.t > 3 && (!mate || s.t > 20)) : (s.t > 4 && (!mate || Math.hypot(mate.pos.x - f.pos.x, mate.pos.z - f.pos.z) < 0.16 || s.t > 16))) {
+    if (s.male ? (s.t > 3 && (!mate || s.t > 20)) : (s.t > 4 && (!mate || Math.hypot(mate.pos.x - f.pos.x, mate.pos.z - f.pos.z) < 0.1 + 0.03 * (f.size + mate.size) || s.t > 16))) {
       if (!s.male) { layEggs(f.pos.x, f.pos.z, Math.round(lr(9, 15)), { gen: Math.max(f.gen, s.mate ? s.mate.gen : f.gen) + 1 }); f.energy = Math.max(0.1, f.energy - 0.35); if (focus && focus.ref === f) focusNote('卵を産んだ'); }
       f.spawn = null;
     }
@@ -6978,9 +6986,9 @@ function lifeSave() {
   if (lifeOff || OPTS.capture) return;
   try {
     const r = (v, k = 1000) => Math.round(v * k) / k;
-    const data = { v: 3, t: r(worldH, 10), id: lifeId, gm: lifeGenMax,
+    const data = { v: 4, t: r(worldH, 10), id: lifeId, gm: lifeGenMax,
       tads: tadpoles.filter((T) => T.st !== 'dead').map((T) => [T.id, r(T.born, 10), r(T.dev, 10), r(T.x), r(T.z), r(T.y), r(T.energy), r(T.health), T.green ? 1 : 0, r(T.seed), T.gen]),
-      frogs: frogs.filter((f) => !f.dying).map((f) => [f.id, r(f.born, 10), r(f.dev, 10), f.male ? 1 : 0, f.green ? 1 : 0, r(f.size), r(f.maxSize), r(f.energy), r(f.health), r(f.dieP, 100000), r(f.cool, 10), f.pad, r(f.lx), r(f.lz), r(f.yaw), r(f.mat.uniforms.uSeedF.value), f.gen]),
+      frogs: frogs.filter((f) => !f.dying).map((f) => [f.id, r(f.born, 10), r(f.dev, 10), f.male ? 1 : 0, f.green ? 1 : 0, r(f.size), r(f.maxSize), r(f.energy), r(f.health), r(f.dieP, 100000), r(f.cool, 10), f.pad, r(f.lx), r(f.lz), r(f.yaw), r(f.mat.uniforms.uSeedF.value), f.gen, r(f.grow)]),
       eggs: eggs.map((E) => [r(E.x), r(E.z), r(E.laid, 10), E.list.map((e) => e.map((v) => r(v, 10000))), E.gen]),
       algae: Array.from(algae, (v) => Math.round(v * 255)) };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
@@ -6989,14 +6997,16 @@ function lifeSave() {
 function lifeLoad() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (e) { d = null; }
-  if (!d || !(d.v >= 1 && d.v <= 3)) return false;
+  if (!d || !(d.v >= 1 && d.v <= 4)) return false;
   try {
     worldH = d.t; lifeId = d.id; lifeGenMax = d.gm ?? 1;
     for (const a of d.tads) makeTadpole({ id: a[0], born: a[1], dev: a[2], x: a[3], z: a[4], y: a[5], energy: a[6], health: a[7], green: !!a[8], gen: a[10] ?? 1 }).seed = a[9];
     for (const a of d.frogs) {
       const pi = a[11] >= 0 && a[11] < NPAD && !padTaken(a[11]) ? a[11] : pads.findIndex((p, i) => i < NPAD && p.r > 0.09 && !padTaken(i));
       if (pi < 0) continue;
-      const f = makeFrog({ id: a[0], born: a[1], dev: a[2], male: !!a[3], green: !!a[4], size: a[5], maxSize: a[6], energy: a[7], health: a[8], dieP: d.v >= 3 ? a[9] : frogDieP(), cool: a[10], seed: a[15], gen: a[16] ?? 1,
+      // older saves: the frog gets its own lifespan chance (before v3) and its own size ceiling and pace of growing (before v4)
+      const f = makeFrog({ id: a[0], born: a[1], dev: a[2], male: !!a[3], green: !!a[4], size: a[5], energy: a[7], health: a[8], dieP: d.v >= 3 ? a[9] : frogDieP(),
+        maxSize: d.v >= 4 ? a[6] : Math.max(a[5], frogMaxSize(!!a[3])), grow: d.v >= 4 ? a[17] : frogGrow(), cool: a[10], seed: a[15], gen: a[16] ?? 1,
         tail: 1 - smooth01(LIFE.CLIMB, LIFE.TAILGONE, a[2]) });
       if (!f) continue;
       f.pad = pi; f.lx = a[12]; f.lz = a[13]; f.yaw = a[14];
@@ -7050,7 +7060,7 @@ function focusCard(dt) {
   if ((fcT -= dt) > 0) return; fcT = 0.25;
   const o = focus.ref, isTad = focus.kind === 'tad';
   const name = isTad ? 'オタマジャクシ' : o.dev < LIFE.ADULT ? '子ガエル' : `アマガエル（${o.male ? 'オス' : 'メス'}）`;
-  const len = isTad ? tadLen(o) * 100 : FROG_SCALE * o.size * 7.2;
+  const len = isTad ? tadLen(o) * 100 : FROG_CM * o.size;
   $('fc-name').textContent = `${name}　No.${o.id}　第${o.gen || 1}世代`;
   $('fc-age').textContent = `生まれて ${ageText(worldH - o.born)}`;
   const parts = [stageText(o), `${isTad ? '全長' : '体長'} ${len.toFixed(1)}cm`, condText(o)].filter(Boolean);
